@@ -107,59 +107,20 @@ EXAMPLE_FILE="$SCRIPT_DIR/config.toml.example"
 
 if [ -f "$CONFIG_FILE" ]; then
     echo "config.toml exists, updating values..."
-    # Update existing config with sed
-    sudo -u recast sed -i "s|^id = .*|id = \"$RECORDER_ID\"|" "$CONFIG_FILE"
-    sudo -u recast sed -i "s|^hostname = .*|hostname = \"$RECORDER_HOSTNAME\"|" "$CONFIG_FILE"
-    sudo -u recast sed -i "s|^management_server_url = .*|management_server_url = \"http://$MANAGER_HOSTNAME:5000\"|" "$CONFIG_FILE"
-elif [ -f "$EXAMPLE_FILE" ]; then
-    echo "Copying config.toml.example to config.toml..."
-    sudo -u recast cp "$EXAMPLE_FILE" "$CONFIG_FILE"
-    # Update with user values
-    sudo -u recast sed -i "s|^id = .*|id = \"$RECORDER_ID\"|" "$CONFIG_FILE"
-    sudo -u recast sed -i "s|^hostname = .*|hostname = \"$RECORDER_HOSTNAME\"|" "$CONFIG_FILE"
-    sudo -u recast sed -i "s|^management_server_url = .*|management_server_url = \"http://$MANAGER_HOSTNAME:5000\"|" "$CONFIG_FILE"
 else
-    echo "Creating config.toml from scratch..."
-    sudo -u recast tee "$CONFIG_FILE" > /dev/null << CONFIGEOF
-# Recast Recorder Configuration
-
-[recorder]
-id = "$RECORDER_ID"
-hostname = "$RECORDER_HOSTNAME"
-management_server_url = "http://$MANAGER_HOSTNAME:5000"
-poll_interval = 10
-heartbeat_interval = 30
-
-[recording]
-screen_width = 1920
-screen_height = 1080
-framerate = 30
-audio_source_name = "virtsink.monitor"
-
-[video]
-preset = "ultrafast"
-crf = 28
-maxrate_kbps = 2000
-bufsize_kbps = 4000
-threads = 2
-pix_fmt = "yuv420p"
-profile = "baseline"
-gop_multiplier = 2
-hls_time = 5
-
-[audio]
-bitrate_kbps = 192
-sample_rate = 48000
-channels = 2
-
-[paths]
-output_dir = "/opt/recast/recordings"
-chrome_profiles_dir = "/home/recast/.recast-chrome"
-CONFIGEOF
+    if [ ! -f "$EXAMPLE_FILE" ]; then
+        echo "ERROR: config.toml.example not found at $EXAMPLE_FILE"
+        exit 1
+    fi
+    echo "Copying config.toml.example to config.toml..."
+    sudo cp "$EXAMPLE_FILE" "$CONFIG_FILE"
+    sudo chown recast:recast "$CONFIG_FILE"
 fi
 
-# Ensure correct ownership
-sudo chown recast:recast "$CONFIG_FILE"
+# Update config with user values
+sudo sed -i "s|^id = .*|id = \"$RECORDER_ID\"|" "$CONFIG_FILE"
+sudo sed -i "s|^hostname = .*|hostname = \"$RECORDER_HOSTNAME\"|" "$CONFIG_FILE"
+sudo sed -i "s|^management_server_url = .*|management_server_url = \"http://$MANAGER_HOSTNAME:5000\"|" "$CONFIG_FILE"
 
 echo ""
 echo "Step 8: Installing project files and systemd service..."
