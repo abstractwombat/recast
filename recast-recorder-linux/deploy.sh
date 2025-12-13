@@ -26,8 +26,8 @@ cp -r "$SCRIPT_DIR/templates/"* "$DEST_DIR/templates/"
 # Copy service file
 cp "$SCRIPT_DIR/recast-recorder.service" "$DEST_DIR/"
 
-# Set ownership
-chown -R recast:recast "$DEST_DIR"
+# Set ownership (exclude problematic cache/fuse directories)
+find "$DEST_DIR" -path "$DEST_DIR/.cache" -prune -o -print0 | xargs -0 chown recast:recast 2>/dev/null || true
 
 echo "Deployment complete. Files copied to $DEST_DIR"
 ls -la "$DEST_DIR"
