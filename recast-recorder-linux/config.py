@@ -12,6 +12,12 @@ try:
 except ImportError:
     import tomli as tomllib
 
+# For writing TOML files
+try:
+    import tomli_w
+except ImportError:
+    tomli_w = None
+
 
 def load_config(config_path: Path = None) -> dict:
     """
@@ -92,8 +98,102 @@ def _apply_defaults(config: dict) -> dict:
     return result
 
 
+# Track the config file path for saving
+_config_path = None
+
+
+def _find_config_path() -> Path:
+    """Find the config file path."""
+    candidates = [
+        Path("/opt/recast/config.toml"),
+        Path(__file__).parent / "config.toml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    # Default to local config.toml if none exists
+    return Path(__file__).parent / "config.toml"
+
+
+def get_config_path() -> Path:
+    """Get the current config file path."""
+    global _config_path
+    if _config_path is None:
+        _config_path = _find_config_path()
+    return _config_path
+
+
+def save_config(config_data: dict, config_path: Path = None) -> bool:
+    """
+    Save configuration to TOML file.
+    
+    Args:
+        config_data: Dict with config sections (recording, video, audio, etc.)
+        config_path: Optional path to save to. Uses current config path if not specified.
+    
+    Returns:
+        True if save succeeded, False otherwise.
+    """
+    if tomli_w is None:
+        raise ImportError("tomli_w is required for saving config. Install with: pip install tomli-w")
+    
+    if config_path is None:
+        config_path = get_config_path()
+    
+    try:
+        with open(config_path, "wb") as f:
+            tomli_w.dump(config_data, f)
+        return True
+    except Exception as e:
+        raise IOError(f"Failed to save config: {e}")
+
+
+def reload_config():
+    """Reload configuration from disk and update module-level attributes."""
+    global _config, recorder, recording, video, audio, paths
+    _config = load_config(get_config_path())
+    recorder = _config["recorder"]
+    recording = _config["recording"]
+    video = _config["video"]
+    audio = _config["audio"]
+    paths = _config["paths"]
+    return _config
+
+
+def get_full_config() -> dict:
+    """Get the full current configuration as a dict."""
+    return {
+        "recorder": dict(recorder),
+        "recording": dict(recording),
+        "video": dict(video),
+        "audio": dict(audio),
+        "paths": dict(paths),
+    }
+
+
+def update_section(section: str, updates: dict) -> dict:
+    """
+    Update a specific config section and save to disk.
+    
+    Args:
+        section: Section name (recording, video, audio)
+        updates: Dict of key-value pairs to update
+    
+    Returns:
+        The updated full config dict.
+    """
+    full_config = get_full_config()
+    if section not in full_config:
+        raise ValueError(f"Unknown config section: {section}")
+    
+    full_config[section].update(updates)
+    save_config(full_config)
+    return reload_config()
+
+
 # Load config at module import time
 _config = load_config()
+_config_path = _find_config_path()
 
 # Expose config sections as module-level attributes for easy access
 recorder = _config["recorder"]

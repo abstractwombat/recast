@@ -29,6 +29,13 @@
     .toast.show { display:block; }
     .toast .title { font-weight:600; margin-bottom: 6px; }
     .err { background:#fef2f2; color:#991b1b; border:1px solid #fee2e2; padding:2px 8px; border-radius:9999px; font-size:12px; font-weight:600; }
+    .settings-section { background: #f9fafb; border-radius: 8px; padding: 16px; }
+    .field { margin-bottom: 10px; }
+    .field label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+    .field input, .field select { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+    .field input:focus, .field select:focus { outline: none; border-color: #111827; }
+    .success { color: #166534; }
+    .error { color: #991b1b; }
   </style>
 </head>
 <body>
@@ -69,6 +76,122 @@
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+
+    <div class="card" style="margin-top: 24px;">
+      <h1>Recorder Settings</h1>
+      <p class="muted">Configure FFmpeg recording, video encoding, and audio settings. Changes are saved to config.toml and apply to upcoming recordings.</p>
+      
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 16px;">
+        <!-- Recording Section -->
+        <div class="settings-section">
+          <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">Recording</h3>
+          <div class="field">
+            <label for="screen_width">Screen Width</label>
+            <input type="number" id="screen_width" min="640" max="3840" step="1" />
+          </div>
+          <div class="field">
+            <label for="screen_height">Screen Height</label>
+            <input type="number" id="screen_height" min="480" max="2160" step="1" />
+          </div>
+          <div class="field">
+            <label for="framerate">Framerate</label>
+            <input type="number" id="framerate" min="15" max="60" step="1" />
+          </div>
+          <div class="field">
+            <label for="audio_source_name">Audio Source</label>
+            <input type="text" id="audio_source_name" placeholder="virtsink.monitor" />
+          </div>
+        </div>
+
+        <!-- Video Section -->
+        <div class="settings-section">
+          <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">Video Encoding</h3>
+          <div class="field">
+            <label for="preset">Preset</label>
+            <select id="preset">
+              <option value="ultrafast">ultrafast</option>
+              <option value="superfast">superfast</option>
+              <option value="veryfast">veryfast</option>
+              <option value="faster">faster</option>
+              <option value="fast">fast</option>
+              <option value="medium">medium</option>
+              <option value="slow">slow</option>
+              <option value="slower">slower</option>
+              <option value="veryslow">veryslow</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="crf">CRF (Quality)</label>
+            <input type="number" id="crf" min="0" max="51" step="1" />
+          </div>
+          <div class="field">
+            <label for="maxrate_kbps">Max Rate (kbps)</label>
+            <input type="number" id="maxrate_kbps" min="500" max="50000" step="100" />
+          </div>
+          <div class="field">
+            <label for="bufsize_kbps">Buffer Size (kbps)</label>
+            <input type="number" id="bufsize_kbps" min="500" max="100000" step="100" />
+          </div>
+          <div class="field">
+            <label for="threads">Threads</label>
+            <input type="number" id="threads" min="1" max="32" step="1" />
+          </div>
+          <div class="field">
+            <label for="pix_fmt">Pixel Format</label>
+            <select id="pix_fmt">
+              <option value="yuv420p">yuv420p</option>
+              <option value="yuv422p">yuv422p</option>
+              <option value="yuv444p">yuv444p</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="profile">H.264 Profile</label>
+            <select id="profile">
+              <option value="baseline">baseline</option>
+              <option value="main">main</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="gop_multiplier">GOP Multiplier</label>
+            <input type="number" id="gop_multiplier" min="1" max="10" step="1" />
+          </div>
+          <div class="field">
+            <label for="hls_time">HLS Segment (sec)</label>
+            <input type="number" id="hls_time" min="1" max="30" step="1" />
+          </div>
+        </div>
+
+        <!-- Audio Section -->
+        <div class="settings-section">
+          <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">Audio Encoding</h3>
+          <div class="field">
+            <label for="bitrate_kbps">Bitrate (kbps)</label>
+            <input type="number" id="bitrate_kbps" min="64" max="320" step="32" />
+          </div>
+          <div class="field">
+            <label for="sample_rate">Sample Rate</label>
+            <select id="sample_rate">
+              <option value="44100">44100 Hz</option>
+              <option value="48000">48000 Hz</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="channels">Channels</label>
+            <select id="channels">
+              <option value="1">Mono (1)</option>
+              <option value="2">Stereo (2)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 16px;">
+        <button class="btn" id="btnSaveConfig">Save Settings</button>
+        <button class="btn secondary" id="btnReloadConfig">Reload</button>
+        <span id="configStatus" class="muted" style="margin-left: 12px;"></span>
+      </div>
     </div>
   </div>
 
@@ -209,7 +332,97 @@
     document.getElementById('btnStop').addEventListener('click', stopVNC);
     document.getElementById('btnRefresh').addEventListener('click', refresh);
 
+    // Config management
+    async function loadConfig() {
+      const statusEl = document.getElementById('configStatus');
+      try {
+        const res = await fetch('/api/config');
+        if (!res.ok) throw new Error('Failed to load config');
+        const data = await res.json();
+        
+        // Recording fields
+        document.getElementById('screen_width').value = data.recording.screen_width || 1920;
+        document.getElementById('screen_height').value = data.recording.screen_height || 1080;
+        document.getElementById('framerate').value = data.recording.framerate || 30;
+        document.getElementById('audio_source_name').value = data.recording.audio_source_name || '';
+        
+        // Video fields
+        document.getElementById('preset').value = data.video.preset || 'ultrafast';
+        document.getElementById('crf').value = data.video.crf || 28;
+        document.getElementById('maxrate_kbps').value = data.video.maxrate_kbps || 2000;
+        document.getElementById('bufsize_kbps').value = data.video.bufsize_kbps || 4000;
+        document.getElementById('threads').value = data.video.threads || 2;
+        document.getElementById('pix_fmt').value = data.video.pix_fmt || 'yuv420p';
+        document.getElementById('profile').value = data.video.profile || 'baseline';
+        document.getElementById('gop_multiplier').value = data.video.gop_multiplier || 2;
+        document.getElementById('hls_time').value = data.video.hls_time || 5;
+        
+        // Audio fields
+        document.getElementById('bitrate_kbps').value = data.audio.bitrate_kbps || 192;
+        document.getElementById('sample_rate').value = data.audio.sample_rate || 48000;
+        document.getElementById('channels').value = data.audio.channels || 2;
+        
+        statusEl.textContent = 'Config loaded';
+        statusEl.className = 'muted success';
+        setTimeout(() => { statusEl.textContent = ''; }, 2000);
+      } catch (e) {
+        statusEl.textContent = 'Failed to load config';
+        statusEl.className = 'muted error';
+      }
+    }
+
+    async function saveConfig() {
+      const statusEl = document.getElementById('configStatus');
+      statusEl.textContent = 'Saving...';
+      statusEl.className = 'muted';
+      
+      const payload = {
+        recording: {
+          screen_width: parseInt(document.getElementById('screen_width').value, 10),
+          screen_height: parseInt(document.getElementById('screen_height').value, 10),
+          framerate: parseInt(document.getElementById('framerate').value, 10),
+          audio_source_name: document.getElementById('audio_source_name').value,
+        },
+        video: {
+          preset: document.getElementById('preset').value,
+          crf: parseInt(document.getElementById('crf').value, 10),
+          maxrate_kbps: parseInt(document.getElementById('maxrate_kbps').value, 10),
+          bufsize_kbps: parseInt(document.getElementById('bufsize_kbps').value, 10),
+          threads: parseInt(document.getElementById('threads').value, 10),
+          pix_fmt: document.getElementById('pix_fmt').value,
+          profile: document.getElementById('profile').value,
+          gop_multiplier: parseInt(document.getElementById('gop_multiplier').value, 10),
+          hls_time: parseInt(document.getElementById('hls_time').value, 10),
+        },
+        audio: {
+          bitrate_kbps: parseInt(document.getElementById('bitrate_kbps').value, 10),
+          sample_rate: parseInt(document.getElementById('sample_rate').value, 10),
+          channels: parseInt(document.getElementById('channels').value, 10),
+        },
+      };
+      
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Failed to save');
+        statusEl.textContent = 'Settings saved!';
+        statusEl.className = 'muted success';
+        setTimeout(() => { statusEl.textContent = ''; }, 3000);
+      } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+        statusEl.className = 'muted error';
+      }
+    }
+
+    document.getElementById('btnSaveConfig').addEventListener('click', saveConfig);
+    document.getElementById('btnReloadConfig').addEventListener('click', loadConfig);
+
     refresh();
+    loadConfig();
     setInterval(refresh, 5000);
   </script>
 </body>

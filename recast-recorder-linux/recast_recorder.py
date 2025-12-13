@@ -201,6 +201,102 @@ def control_page():
     """Render controller VNC control page."""
     return render_template('control.html')
 
+@stream_app.route('/api/config', methods=['GET'])
+def get_config():
+    """Get current recorder configuration (recording, video, audio sections)."""
+    try:
+        full_config = config.get_full_config()
+        return jsonify({
+            'status': 'success',
+            'recording': full_config['recording'],
+            'video': full_config['video'],
+            'audio': full_config['audio'],
+        })
+    except Exception as e:
+        logger.error(f"Failed to get config: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@stream_app.route('/api/config', methods=['POST'])
+def update_config():
+    """Update recorder configuration and save to config.toml."""
+    global SCREEN_WIDTH, SCREEN_HEIGHT, FRAMERATE, AUDIO_SOURCE_NAME
+    global VIDEO_PRESET, VIDEO_CRF, VIDEO_MAXRATE_K, VIDEO_BUFSIZE_K
+    global VIDEO_THREADS, VIDEO_PIX_FMT, VIDEO_PROFILE, GOP_MULT, HLS_TIME
+    global AUDIO_BITRATE_K, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
+    
+    try:
+        payload = request.get_json(silent=True) or {}
+        full_config = config.get_full_config()
+        
+        # Update recording section
+        if 'recording' in payload:
+            rec = payload['recording']
+            for key in ['screen_width', 'screen_height', 'framerate', 'audio_source_name']:
+                if key in rec:
+                    if key in ['screen_width', 'screen_height', 'framerate']:
+                        full_config['recording'][key] = int(rec[key])
+                    else:
+                        full_config['recording'][key] = str(rec[key])
+        
+        # Update video section
+        if 'video' in payload:
+            vid = payload['video']
+            for key in ['preset', 'crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 
+                        'pix_fmt', 'profile', 'gop_multiplier', 'hls_time']:
+                if key in vid:
+                    if key in ['crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 'gop_multiplier', 'hls_time']:
+                        full_config['video'][key] = int(vid[key])
+                    else:
+                        full_config['video'][key] = str(vid[key])
+        
+        # Update audio section
+        if 'audio' in payload:
+            aud = payload['audio']
+            for key in ['bitrate_kbps', 'sample_rate', 'channels']:
+                if key in aud:
+                    full_config['audio'][key] = int(aud[key])
+        
+        # Save to disk
+        config.save_config(full_config)
+        
+        # Reload config module
+        config.reload_config()
+        
+        # Update module-level globals for upcoming recordings
+        SCREEN_WIDTH = config.recording["screen_width"]
+        SCREEN_HEIGHT = config.recording["screen_height"]
+        FRAMERATE = config.recording["framerate"]
+        AUDIO_SOURCE_NAME = config.recording["audio_source_name"]
+        
+        VIDEO_PRESET = config.video["preset"]
+        VIDEO_CRF = config.video["crf"]
+        VIDEO_MAXRATE_K = str(config.video["maxrate_kbps"])
+        VIDEO_BUFSIZE_K = str(config.video["bufsize_kbps"])
+        VIDEO_THREADS = str(config.video["threads"])
+        VIDEO_PIX_FMT = config.video["pix_fmt"]
+        VIDEO_PROFILE = config.video["profile"]
+        GOP_MULT = config.video["gop_multiplier"]
+        HLS_TIME = str(config.video["hls_time"])
+        
+        AUDIO_BITRATE_K = str(config.audio["bitrate_kbps"])
+        AUDIO_SAMPLE_RATE = str(config.audio["sample_rate"])
+        AUDIO_CHANNELS = str(config.audio["channels"])
+        
+        logger.info("Config updated and saved to disk")
+        
+        return jsonify({
+            'status': 'success',
+            'recording': config.recording,
+            'video': config.video,
+            'audio': config.audio,
+        })
+    except ImportError as e:
+        logger.error(f"Failed to save config (missing tomli-w): {e}")
+        return jsonify({'status': 'error', 'message': 'tomli-w package required for saving config'}), 500
+    except Exception as e:
+        logger.error(f"Failed to update config: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 def list_controllers():
     ctrls = []
     try:
