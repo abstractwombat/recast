@@ -53,8 +53,10 @@ cd /opt/recast || { echo "Failed to enter /opt/recast"; exit 1; }
 
 echo ""
 echo "Step 4: Installing Python dependencies..."
+sudo cp "$SCRIPT_DIR/requirements.txt" /opt/recast/requirements.txt
+sudo chown recast:recast /opt/recast/requirements.txt
 sudo -u recast python3 -m venv venv
-sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && pip install -r $SCRIPT_DIR/requirements.txt"
+sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && pip install -r /opt/recast/requirements.txt"
 
 echo ""
 echo "Step 5: Creating recordings directory..."
