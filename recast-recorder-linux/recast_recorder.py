@@ -297,6 +297,155 @@ def update_config():
         logger.error(f"Failed to update config: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+# Test recording state
+test_recording_active = False
+test_recording_controller = None
+test_recording_start_time = None
+
+@stream_app.route('/api/test_recording/status')
+def test_recording_status():
+    """Get status of test recording."""
+    global test_recording_active, test_recording_controller, test_recording_start_time
+    
+    is_running = False
+    if test_recording_active and ffmpeg_process:
+        is_running = ffmpeg_process.poll() is None
+        if not is_running:
+            # FFmpeg stopped unexpectedly
+            test_recording_active = False
+    
+    elapsed = 0
+    if test_recording_active and test_recording_start_time:
+        elapsed = int(time.time() - test_recording_start_time)
+    
+    return jsonify({
+        'active': test_recording_active and is_running,
+        'controller': test_recording_controller,
+        'elapsed_seconds': elapsed,
+        'ffmpeg_running': ffmpeg_process is not None and ffmpeg_process.poll() is None if ffmpeg_process else False,
+    })
+
+@stream_app.route('/api/test_recording/start', methods=['POST'])
+def test_recording_start():
+    """Start a test recording using an existing session's display."""
+    global test_recording_active, test_recording_controller, test_recording_start_time
+    global LIVE_START_TIME
+    
+    if test_recording_active:
+        return jsonify({'status': 'error', 'message': 'Test recording already active'}), 400
+    
+    if current_job:
+        return jsonify({'status': 'error', 'message': 'A real recording job is in progress'}), 400
+    
+    payload = request.get_json(silent=True) or {}
+    controller = payload.get('controller')
+    
+    if not controller:
+        return jsonify({'status': 'error', 'message': 'controller required'}), 400
+    
+    # Check if session exists for this controller
+    sess = controller_sessions.get(controller)
+    if not sess or not sess.get('display'):
+        return jsonify({'status': 'error', 'message': f'No active session for controller {controller}. Launch a session first.'}), 400
+    
+    display = sess.get('display')
+    
+    try:
+        # Set DISPLAY env for FFmpeg
+        os.environ['DISPLAY'] = display
+        
+        # Clear old HLS files
+        if HLS_DIR.exists():
+            import shutil
+            shutil.rmtree(HLS_DIR, ignore_errors=True)
+        HLS_DIR.mkdir(exist_ok=True)
+        
+        # Start FFmpeg recording
+        result = start_ffmpeg_recording(display)
+        if not result:
+            return jsonify({'status': 'error', 'message': 'Failed to start FFmpeg recording'}), 500
+        
+        test_recording_active = True
+        test_recording_controller = controller
+        test_recording_start_time = time.time()
+        LIVE_START_TIME = datetime.now(timezone.utc).isoformat()
+        
+        logger.info(f"Test recording started on display {display} for controller {controller}")
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Test recording started',
+            'display': display,
+            'controller': controller,
+        })
+    except Exception as e:
+        logger.error(f"Failed to start test recording: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@stream_app.route('/api/test_recording/stop', methods=['POST'])
+def test_recording_stop():
+    """Stop the test recording and optionally save to MP4."""
+    global test_recording_active, test_recording_controller, test_recording_start_time
+    global ffmpeg_process, parec_process
+    
+    if not test_recording_active:
+        return jsonify({'status': 'error', 'message': 'No test recording active'}), 400
+    
+    payload = request.get_json(silent=True) or {}
+    save_mp4 = payload.get('save_mp4', False)
+    
+    try:
+        # Stop FFmpeg gracefully
+        if ffmpeg_process and ffmpeg_process.poll() is None:
+            ffmpeg_process.send_signal(signal.SIGINT)
+            try:
+                ffmpeg_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                ffmpeg_process.kill()
+        
+        # Stop parec if running
+        if parec_process and parec_process.poll() is None:
+            try:
+                parec_process.terminate()
+                parec_process.wait(timeout=5)
+            except Exception:
+                pass
+        
+        elapsed = int(time.time() - test_recording_start_time) if test_recording_start_time else 0
+        controller = test_recording_controller
+        
+        output_file = None
+        if save_mp4:
+            # Convert HLS to MP4
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"test_recording_{timestamp}.mp4"
+            output_path = convert_hls_to_mp4(filename, job_id=None)
+            if output_path:
+                output_file = filename
+                logger.info(f"Test recording saved to: {output_path}")
+        
+        # Reset state
+        test_recording_active = False
+        test_recording_controller = None
+        test_recording_start_time = None
+        
+        logger.info(f"Test recording stopped after {elapsed}s")
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Test recording stopped',
+            'elapsed_seconds': elapsed,
+            'controller': controller,
+            'saved_file': output_file,
+        })
+    except Exception as e:
+        logger.error(f"Failed to stop test recording: {e}")
+        # Reset state anyway
+        test_recording_active = False
+        test_recording_controller = None
+        test_recording_start_time = None
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 def list_controllers():
     ctrls = []
     try:

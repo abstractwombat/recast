@@ -193,6 +193,44 @@
         <span id="configStatus" class="muted" style="margin-left: 12px;"></span>
       </div>
     </div>
+
+    <div class="card" style="margin-top: 24px;">
+      <h1>Recorder Testing</h1>
+      <p class="muted">Start a test recording using an active session. The live stream will be available at <code>/live</code>. A session must be running first (use "Launch Session" above).</p>
+      
+      <div class="row" style="margin-top: 12px;">
+        <label for="testController">Controller:</label>
+        <select id="testController"></select>
+        <button class="btn" id="btnStartTest">Start Recording</button>
+        <button class="btn stop" id="btnStopTest">Stop Recording</button>
+        <label style="margin-left: 12px;"><input type="checkbox" id="saveMp4" /> Save as MP4</label>
+      </div>
+      
+      <div class="status" id="testStatus"></div>
+      
+      <div id="testInfo" style="margin-top: 12px; display: none;">
+        <table class="table">
+          <tbody>
+            <tr>
+              <td><strong>Status</strong></td>
+              <td id="testRecordingStatus">-</td>
+            </tr>
+            <tr>
+              <td><strong>Controller</strong></td>
+              <td id="testRecordingController">-</td>
+            </tr>
+            <tr>
+              <td><strong>Elapsed</strong></td>
+              <td id="testRecordingElapsed">-</td>
+            </tr>
+            <tr>
+              <td><strong>Live Stream</strong></td>
+              <td><a href="/live" target="_blank">/live</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <div id="toast" class="toast">
@@ -420,6 +458,135 @@
 
     document.getElementById('btnSaveConfig').addEventListener('click', saveConfig);
     document.getElementById('btnReloadConfig').addEventListener('click', loadConfig);
+
+    // Test recording management
+    function populateTestControllers(data) {
+      const sel = document.getElementById('testController');
+      const prev = sel.value;
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      const controllers = data.controllers || {};
+      const names = Object.keys(controllers).sort();
+      // Only show controllers with active sessions
+      for (const name of names) {
+        const info = controllers[name] || {};
+        if (info.vnc_running && info.mode === 'session') {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        }
+      }
+      if (names.includes(prev)) sel.value = prev;
+      // If no sessions, add a placeholder
+      if (!sel.firstChild) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no active sessions)';
+        opt.disabled = true;
+        sel.appendChild(opt);
+      }
+    }
+
+    async function refreshTestStatus() {
+      try {
+        const res = await fetch('/api/test_recording/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        const infoDiv = document.getElementById('testInfo');
+        const statusEl = document.getElementById('testRecordingStatus');
+        const controllerEl = document.getElementById('testRecordingController');
+        const elapsedEl = document.getElementById('testRecordingElapsed');
+        const startBtn = document.getElementById('btnStartTest');
+        const stopBtn = document.getElementById('btnStopTest');
+        
+        if (data.active) {
+          infoDiv.style.display = 'block';
+          statusEl.innerHTML = '<span class="badge on">RECORDING</span>';
+          controllerEl.textContent = data.controller || '-';
+          const mins = Math.floor(data.elapsed_seconds / 60);
+          const secs = data.elapsed_seconds % 60;
+          elapsedEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+        } else {
+          infoDiv.style.display = 'none';
+          statusEl.textContent = '-';
+          controllerEl.textContent = '-';
+          elapsedEl.textContent = '-';
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+        }
+      } catch (e) {
+        console.error('Failed to get test recording status', e);
+      }
+    }
+
+    async function startTestRecording() {
+      const controller = document.getElementById('testController').value;
+      if (!controller) {
+        document.getElementById('testStatus').textContent = 'No active session selected';
+        return;
+      }
+      
+      document.getElementById('testStatus').textContent = 'Starting...';
+      try {
+        const res = await fetch('/api/test_recording/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          document.getElementById('testStatus').textContent = 'Recording started! View live stream at /live';
+        } else {
+          document.getElementById('testStatus').textContent = 'Error: ' + (data.message || 'Failed to start');
+        }
+        await refreshTestStatus();
+      } catch (e) {
+        document.getElementById('testStatus').textContent = 'Error: ' + e.message;
+      }
+    }
+
+    async function stopTestRecording() {
+      const saveMp4 = document.getElementById('saveMp4').checked;
+      document.getElementById('testStatus').textContent = saveMp4 ? 'Stopping and converting to MP4...' : 'Stopping...';
+      
+      try {
+        const res = await fetch('/api/test_recording/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ save_mp4: saveMp4 }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          let msg = `Recording stopped (${data.elapsed_seconds}s)`;
+          if (data.saved_file) {
+            msg += ` - Saved as ${data.saved_file}`;
+          }
+          document.getElementById('testStatus').textContent = msg;
+        } else {
+          document.getElementById('testStatus').textContent = 'Error: ' + (data.message || 'Failed to stop');
+        }
+        await refreshTestStatus();
+      } catch (e) {
+        document.getElementById('testStatus').textContent = 'Error: ' + e.message;
+      }
+    }
+
+    document.getElementById('btnStartTest').addEventListener('click', startTestRecording);
+    document.getElementById('btnStopTest').addEventListener('click', stopTestRecording);
+
+    // Extend refresh to also update test controller dropdown
+    const originalRefresh = refresh;
+    refresh = async function() {
+      await originalRefresh();
+      try {
+        const data = await fetchStatus();
+        populateTestControllers(data);
+      } catch (e) {}
+      await refreshTestStatus();
+    };
 
     refresh();
     loadConfig();
