@@ -4,6 +4,9 @@
 
 set -e  # Exit on error
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo "=========================================="
 echo "Recast Server Setup"
 echo "=========================================="
@@ -51,7 +54,7 @@ cd /opt/recast || { echo "Failed to enter /opt/recast"; exit 1; }
 echo ""
 echo "Step 4: Installing Python dependencies..."
 sudo -u recast python3 -m venv venv
-sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && if [ -f /opt/recast/requirements.txt ]; then pip install -r /opt/recast/requirements.txt; else pip install Flask requests; fi"
+sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && pip install -r $SCRIPT_DIR/requirements.txt"
 
 echo ""
 echo "Step 5: Creating recordings directory..."
@@ -61,27 +64,13 @@ sudo chown recast:recast /opt/recast/recordings
 echo ""
 echo "Step 6: Creating configuration file..."
 CONFIG_FILE="/opt/recast/config.toml"
-EXAMPLE_FILE="/opt/recast/config.toml.example"
+EXAMPLE_FILE="$SCRIPT_DIR/config.toml.example"
 
 if [ -f "$CONFIG_FILE" ]; then
-    echo "config.toml exists, updating values..."
-elif [ -f "$EXAMPLE_FILE" ]; then
+    echo "config.toml already exists, skipping..."
+else
     echo "Copying config.toml.example to config.toml..."
     sudo -u recast cp "$EXAMPLE_FILE" "$CONFIG_FILE"
-else
-    echo "Creating config.toml from scratch..."
-    sudo -u recast tee "$CONFIG_FILE" > /dev/null << 'CONFIGEOF'
-# Recast Server Configuration
-
-[server]
-host = "0.0.0.0"
-port = 5000
-debug = false
-
-[paths]
-recordings_dir = "/opt/recast/recordings"
-database = "/opt/recast/recordings.db"
-CONFIGEOF
 fi
 
 # Ensure correct ownership
@@ -97,6 +86,8 @@ fi
 
 echo ""
 echo "Step 8: Installing systemd service..."
+sudo cp "$SCRIPT_DIR/recast-server.service" /opt/recast/recast-server.service
+sudo chown recast:recast /opt/recast/recast-server.service
 sudo ln -sf /opt/recast/recast-server.service /etc/systemd/system/recast-server.service
 sudo systemctl daemon-reload
 sudo systemctl enable recast-server
