@@ -1,0 +1,11 @@
+# Recast Server Configuration
+# Copy this file to config.toml and modify as needed
+
+[server]
+host = "0.0.0.0"
+port = 5000
+debug = false
+
+[paths]
+recordings_dir = "/opt/recast/recordings"
+database = "/opt/recast/recordings.db"

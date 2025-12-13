@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ReCast Live</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.9.2/controls.css" />
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0f13; color: #e5e7eb; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, 'Helvetica Neue', 'Noto Sans', Arial, 'Apple Color Emoji', 'Segoe UI Emoji'; }
+    .page { display: flex; flex-direction: column; height: 100%; }
+    header { padding: 10px 14px; display:flex; gap:10px; align-items:center; border-bottom: 1px solid #1f2937; }
+    header h1 { font-size: 14px; margin: 0; font-weight: 600; color: #9ca3af; }
+    main { flex: 1; display:flex; align-items:center; justify-content:center; padding: 8px; }
+    .player-wrap { width: min(100%, 1280px); background: #111827; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; position: relative; }
+    /* 16:9 padding hack for broad browser support */
+    .player-wrap::before { content:""; display:block; padding-top:56.25%; }
+    .player-wrap > .player-abs { position:absolute; inset:0; }
+    .row { display:flex; gap:8px; align-items:center; }
+    button, select { background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:6px 10px; cursor:pointer; }
+    button:hover { background:#0f172a; }
+    .spacer { flex:1; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>ReCast Live</h1>
+      <div class="spacer"></div>
+      <div class="row">
+        <button id="reload">Reload</button>
+        <button id="mute">Mute</button>
+        <span id="status" style="color:#9ca3af;font-size:12px"></span>
+      </div>
+    </header>
+    <main>
+      <div class="player-wrap">
+        <div class="player-abs">
+          <div id="video-container" class="shaka-video-container" style="width:100%;height:100%">
+            <video id="video" class="shaka-video" playsinline muted autoplay style="width:100%;height:100%"></video>
+            <div id="controls" class="shaka-controls-container"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.9.2/shaka-player.ui.min.js"></script>
+  <script>
+    (function(){
+      function getParam(name){ const u=new URL(location.href); return u.searchParams.get(name); }
+      const jobId = getParam('job_id');
+      const manifestUri = jobId ? `/hls/job_${jobId}/stream.m3u8` : null;
+      const video = document.getElementById('video');
+      const videoContainer = document.getElementById('video-container');
+
+      if (!manifestUri) {
+        alert('Missing job_id');
+        return;
+      }
+
+      let player = null;
+      let initialized = false;
+      let saving = false;
+      const posKey = jobId ? `ts_lastpos_${jobId}` : null;
+      async function init() {
+        shaka.polyfill.installAll();
+        const status = document.getElementById('status');
+        if (typeof shaka === 'undefined') {
+          status.textContent = 'Shaka not loaded; trying native playback';
+          try { video.src = manifestUri; await video.play(); } catch (e) { console.error(e); }
+          return;
+        }
+        if (!shaka.Player.isBrowserSupported()) {
+          status.textContent = 'Browser unsupported; trying native playback';
+          try { video.src = manifestUri; await video.play(); } catch (e) { console.error(e); }
+          return;
+        }
+        player = new shaka.Player(video);
+        const ui = new shaka.ui.Overlay(player, videoContainer, video);
+        const config = {
+          streaming: {
+            lowLatencyMode: false,
+            rebufferingGoal: 2,
+            bufferingGoal: 10,
+          },
+          manifest: { hls: { ignoreTextStreamFailures: true } }
+        };
+        player.configure(config);
+        try {
+          console.log('Loading', manifestUri);
+          const savedStr = posKey ? localStorage.getItem(posKey) : null;
+          const saved = savedStr ? parseFloat(savedStr) : NaN;
+          const initialPos = (!Number.isNaN(saved) && isFinite(saved)) ? saved : 0;
+          await player.load(manifestUri, initialPos);
+          
+          try {
+            const range = typeof player.seekRange === 'function' ? player.seekRange() : { start: 0, end: video.duration || 0 };
+            let target = null;
+            if (!Number.isNaN(saved) && isFinite(saved) && range && saved >= range.start && (!range.end || saved <= range.end)) target = saved;
+            else if (range && isFinite(range.start)) target = range.start;
+            if (target != null) { if (typeof player.seek === 'function') player.seek(target); else video.currentTime = target; }
+          } catch {}
+          video.muted = true;
+          try { await video.play(); } catch (e) { console.warn('Autoplay failed', e); }
+          initialized = true;
+          status.textContent = '';
+          // Persist playback position periodically
+          if (!saving && posKey) {
+            saving = true;
+            const saveLoop = () => {
+              try {
+                const t = video.currentTime || 0;
+                if (isFinite(t)) localStorage.setItem(posKey, String(t));
+              } catch {}
+              setTimeout(saveLoop, 1000);
+            };
+            saveLoop();
+          }
+        } catch (e) {
+          console.error('Error loading manifest', e);
+          status.textContent = 'Waiting for stream...';
+          setTimeout(() => location.reload(), 2000);
+        }
+
+        document.getElementById('reload').onclick = () => {
+          if (player) {
+            try {
+              const savedStr = posKey ? localStorage.getItem(posKey) : null;
+              const saved = savedStr ? parseFloat(savedStr) : NaN;
+              const startAt = (!Number.isNaN(saved) && isFinite(saved)) ? saved : 0;
+              player.load(manifestUri, startAt).then(()=>{
+                try {
+                  const range = typeof player.seekRange === 'function' ? player.seekRange() : { start: 0, end: video.duration || 0 };
+                  let target = null;
+                  if (!Number.isNaN(saved) && isFinite(saved) && range && saved >= range.start && (!range.end || saved <= range.end)) target = saved;
+                  else if (range && isFinite(range.start)) target = range.start;
+                  if (target != null) { if (typeof player.seek === 'function') player.seek(target); else video.currentTime = target; }
+                } catch {}
+                return video.play();
+              }).catch(()=>location.reload());
+            } catch { location.reload(); }
+          } else {
+            location.reload();
+          }
+        };
+        document.getElementById('mute').onclick = () => { video.muted = !video.muted; };
+      }
+      async function pollReady(){
+        try {
+          const r = await fetch('/api/live_ready');
+          const j = await r.json();
+          const status = document.getElementById('status');
+          if (j.ready && j.segments > 0) {
+            status.textContent = '';
+            if (!initialized) await init();
+          } else {
+            status.textContent = 'Waiting for stream...';
+          }
+        } catch {}
+        finally { setTimeout(pollReady, 1000); }
+      }
+      document.addEventListener('DOMContentLoaded', () => { pollReady(); });
+    })();
+  </script>
+</body>
+</html>

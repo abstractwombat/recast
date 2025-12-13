@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Playback - Recording #{{ job_id }} - Recast</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #1f2937;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 1rem;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+        }
+        .video-container {
+            background-color: #000;
+            border-radius: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 8px;
+            background: #374151;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            transition: width 0.3s ease;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Converting State -->
+    <div id="converting-state" class="hidden">
+        <div class="bg-gray-800 rounded-xl p-8 text-center">
+            <div class="text-6xl mb-4 pulse">🔄</div>
+            <h2 class="text-3xl font-bold text-white mb-4">Converting Recording...</h2>
+            
+            <div class="mb-6">
+                <div class="progress-bar mb-2">
+                    <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+                </div>
+                <p class="text-gray-400 text-sm">
+                    <span id="progress-percent">0</span>% complete
+                </p>
+            </div>
+            
+            <p class="text-gray-300 mb-2">
+                Estimated time remaining: <span id="eta-text" class="text-blue-400 font-semibold">Calculating...</span>
+            </p>
+            
+            <p class="text-gray-400 text-sm mb-6" id="resume-text"></p>
+            
+            <a href="/" class="inline-block bg-gray-700 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition">
+                Cancel and Return to Dashboard
+            </a>
+        </div>
+    </div>
+
+    <!-- Ready State -->
+    <div id="ready-state" class="hidden">
+        <div class="video-container p-6">
+            <div class="mb-4">
+                <h1 class="text-2xl font-bold text-white mb-2"><span id="recording-title"></span></h1>
+                <p class="text-gray-400 text-sm mb-1" id="recording-url"></p>
+                <p class="text-gray-500 text-xs" id="recording-times"></p>
+            </div>
+            
+            <div class="aspect-video mb-4">
+                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/controls.css" />
+                <div id="player-container" class="w-full h-full rounded-lg overflow-hidden relative">
+                    <video id="video-player" class="w-full h-full"></video>
+                    <div id="thumb-preview" class="hidden absolute bottom-12 bg-black/80 text-white text-xs rounded shadow-lg pointer-events-none"></div>
+                </div>
+                <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+                <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/shaka-player.ui.min.js"></script>
+            </div>
+
+            <div class="flex gap-4 text-sm">
+                <div class="flex-1 bg-gray-800 rounded-lg p-3">
+                    <p class="text-gray-400 text-xs mb-1">File Size</p>
+                    <p class="text-white font-semibold" id="file-size">-</p>
+                </div>
+                <div class="flex-1 bg-gray-800 rounded-lg p-3">
+                    <p class="text-gray-400 text-xs mb-1">Duration</p>
+                    <p class="text-white font-semibold" id="duration">-</p>
+                </div>
+                <div class="flex-1 bg-gray-800 rounded-lg p-3">
+                    <p class="text-gray-400 text-xs mb-1">Created</p>
+                    <p class="text-white font-semibold" id="created-at">-</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 flex gap-4 justify-center">
+            <a href="/" class="text-blue-400 hover:text-blue-300 transition text-sm">
+                ← Back to Dashboard
+            </a>
+            <span class="text-gray-600">|</span>
+            <a href="#" id="download-link" download class="text-green-400 hover:text-green-300 transition text-sm">
+                ⬇ Download File
+            </a>
+        </div>
+    </div>
+</div>
+
+<script>
+const jobId = {{ job_id }};
+const urlParams = new URLSearchParams(window.location.search);
+const seekTime = parseInt(urlParams.get('t')) || 0;
+
+const convertingState = document.getElementById('converting-state');
+const readyState = document.getElementById('ready-state');
+const videoPlayer = document.getElementById('video-player');
+const playerContainer = document.getElementById('player-container');
+let shakaPlayer = null;
+let ui = null;
+let uiControls = null;
+let thumbs = [];
+let thumbInterval = 10;
+
+const STORAGE_KEY = `recast_position_${jobId}`;
+
+let pollInterval = null;
+
+// Format time
+function formatTime(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+// Format file size
+function formatFileSize(bytes) {
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+// Calculate ETA
+function calculateETA(estimatedTime) {
+    if (!estimatedTime) return 'Calculating...';
+    
+    const eta = new Date(estimatedTime);
+    const now = new Date();
+    const diffSeconds = Math.max(0, Math.floor((eta - now) / 1000));
+    
+    if (diffSeconds < 60) {
+        return `${diffSeconds} seconds`;
+    } else {
+        const minutes = Math.floor(diffSeconds / 60);
+        const seconds = diffSeconds % 60;
+        return `${minutes}m ${seconds}s`;
+    }
+}
+
+// Show converting state
+function showConvertingState(job) {
+    convertingState.classList.remove('hidden');
+    readyState.classList.add('hidden');
+    
+    const progress = job.conversion_progress || 0;
+    document.getElementById('progress-fill').style.width = progress + '%';
+    document.getElementById('progress-percent').textContent = progress;
+    document.getElementById('eta-text').textContent = calculateETA(job.estimated_completion_time);
+    
+    if (seekTime > 0) {
+        document.getElementById('resume-text').textContent = 
+            `Your playback will resume at ${formatTime(seekTime)} once conversion is complete.`;
+    } else {
+        document.getElementById('resume-text').textContent = 
+            'Playback will start from the beginning once conversion is complete.';
+    }
+}
+
+// Show ready state
+function showReadyState(job, recording) {
+    convertingState.classList.add('hidden');
+    readyState.classList.remove('hidden');
+    
+    const displayTitle = job.title 
+        ? job.title 
+        : "Recording #" + job.id;
+
+    // Populate metadata
+    document.getElementById('recording-title').textContent = displayTitle;
+    document.getElementById('recording-url').textContent = job.url;
+    document.getElementById('recording-times').textContent = 
+        `Recorded: ${job.start_time} to ${job.end_time}`;
+    document.getElementById('file-size').textContent = formatFileSize(recording.file_size_bytes);
+    document.getElementById('duration').textContent = recording.duration_seconds + ' seconds';
+    document.getElementById('created-at').textContent = recording.created_at;
+    
+    document.getElementById('download-link').href = `/recordings/${recording.filename}`;
+
+    if (window.shaka) {
+        shaka.polyfill.installAll();
+        shakaPlayer = new shaka.Player(videoPlayer);
+        ui = new shaka.ui.Overlay(shakaPlayer, playerContainer, videoPlayer);
+        ui.configure({
+            controlPanelElements: ['play_pause', 'time_and_duration', 'mute', 'volume', 'spacer', 'rewind', 'fast_forward', 'picture_in_picture', 'airplay', 'cast', 'fullscreen', 'playback_rate'],
+            seekBarColors: { base: 'rgba(55,65,81,1)', buffered: 'rgba(156,163,175,1)', played: 'linear-gradient(90deg, #3b82f6, #8b5cf6)' },
+            castReceiverAppId: 'CC1AD845'
+        });
+        uiControls = ui.getControls();
+        if (uiControls) {
+            uiControls.addEventListener('caststatuschanged', (e) => {
+                console.log('Cast status:', e['newStatus']);
+            });
+        }
+        shakaPlayer.configure({ streaming: { rebufferingGoal: 2, bufferingGoal: 10 } });
+        shakaPlayer.addEventListener('error', e => console.error('Shaka error', e));
+        shakaPlayer.load(`/recordings/${recording.filename}`).then(() => {
+            const savedPos = loadSavedPosition();
+            const targetTime = seekTime || savedPos;
+            if (targetTime > 0) {
+                videoPlayer.currentTime = targetTime;
+                showToast(`Seeking to ${formatTime(targetTime)}`);
+            }
+            videoPlayer.play().catch(()=>{});
+        }).catch(err => console.error('Load failed', err));
+
+        setupSkipControls();
+        setupKeyboardShortcuts();
+        loadThumbnails(`/recording_assets/${recording.filename}/vtt`);
+    } else {
+        videoPlayer.src = `/recordings/${recording.filename}`;
+        videoPlayer.addEventListener('loadedmetadata', function() {
+            const savedPos = loadSavedPosition();
+            const targetTime = seekTime || savedPos;
+            if (targetTime > 0) {
+                videoPlayer.currentTime = targetTime;
+                showToast(`Seeking to ${formatTime(targetTime)}`);
+            }
+            videoPlayer.play().catch(()=>{});
+        });
+    }
+
+    setInterval(savePosition, 10000);
+    videoPlayer.addEventListener('pause', savePosition);
+    videoPlayer.addEventListener('seeked', savePosition);
+    window.addEventListener('beforeunload', savePosition);
+}
+
+// Load saved position
+function loadSavedPosition() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+        const data = JSON.parse(saved);
+        return data.position || 0;
+    }
+    return 0;
+}
+
+// Save position
+function savePosition() {
+    if (videoPlayer.currentTime > 0) {
+        const data = {
+            position: videoPlayer.currentTime,
+            timestamp: new Date().toISOString()
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+}
+
+// Show toast
+function showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'fixed top-4 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg z-50';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => toast.remove(), 3000);
+}
+
+// Poll job status
+async function checkJobStatus() {
+    try {
+        const response = await fetch(`/api/job_status/${jobId}`);
+        const job = await response.json();
+        
+        if (job.status === 'CONVERTING') {
+            showConvertingState(job);
+        } else if (job.status === 'COMPLETED' && job.recording) {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+            }
+            showReadyState(job, job.recording);
+        } else if (job.status === 'FAILED') {
+            alert('Recording failed: ' + (job.error_message || 'Unknown error'));
+            window.location.href = '/';
+        }
+    } catch (error) {
+        console.error('Error checking job status:', error);
+    }
+}
+
+// Start polling
+checkJobStatus();
+pollInterval = setInterval(checkJobStatus, 2000);
+</script>
+
+<script>
+function setupSkipControls() {
+    const rewind = playerContainer.querySelector('.shaka-rewind-button');
+    const ff = playerContainer.querySelector('.shaka-fast-forward-button');
+    if (rewind) rewind.addEventListener('click', () => { try { videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - 10); } catch {} });
+    if (ff) ff.addEventListener('click', () => { try { videoPlayer.currentTime = Math.min((videoPlayer.duration||1e9), videoPlayer.currentTime + 30); } catch {} });
+}
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+        if (e.key === 'j' || e.key === 'J') { videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - 10); }
+        if (e.key === 'l' || e.key === 'L') { videoPlayer.currentTime = Math.min((videoPlayer.duration||1e9), videoPlayer.currentTime + 30); }
+        if (e.key === 'k' || e.key === 'K' || e.code === 'Space') { if (videoPlayer.paused) videoPlayer.play(); else videoPlayer.pause(); }
+        if (e.key === ',' ) { videoPlayer.playbackRate = Math.max(0.25, (videoPlayer.playbackRate||1) - 0.25); }
+        if (e.key === '.' ) { videoPlayer.playbackRate = Math.min(3, (videoPlayer.playbackRate||1) + 0.25); }
+    });
+}
+async function loadThumbnails(vttUrl) {
+    try {
+        const res = await fetch(vttUrl);
+        if (!res.ok) return;
+        const text = await res.text();
+        const lines = text.split(/\r?\n/);
+        let i = 0;
+        while (i < lines.length) {
+            const l = lines[i].trim();
+            if (/^\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}$/.test(l)) {
+                const [s,e] = l.split('-->').map(x=>x.trim());
+                const img = (lines[i+1]||'').trim();
+                if (img) thumbs.push({ start: parseTime(s), end: parseTime(e), src: img });
+                i += 2;
+            } else { i++; }
+        }
+        attachSeekbarPreview();
+    } catch {}
+}
+function parseTime(t) {
+    const m = t.match(/(\d+):(\d+):(\d+)\.(\d+)/);
+    if (!m) return 0;
+    return (+m[1])*3600 + (+m[2])*60 + (+m[3]) + (+m[4])/1000;
+}
+function findThumbAt(time) {
+    for (let i=0;i<thumbs.length;i++) { if (time >= thumbs[i].start && time < thumbs[i].end) return thumbs[i]; }
+    return null;
+}
+function attachSeekbarPreview() {
+    const overlay = document.getElementById('thumb-preview');
+    if (thumbs.length === 0) return;
+    const connect = () => {
+        const bar = playerContainer.querySelector('.shaka-seek-bar-container, .shaka-seek-bar');
+        if (!bar) return false;
+        const img = document.createElement('img');
+        img.className = 'block';
+        img.style.width = '160px';
+        overlay.innerHTML = '';
+        overlay.appendChild(img);
+        function update(e) {
+            const rect = bar.getBoundingClientRect();
+            const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+            const t = pct * (videoPlayer.duration || 0);
+            const th = findThumbAt(t);
+            if (!th) { overlay.classList.add('hidden'); return; }
+            img.src = th.src;
+            overlay.style.left = `${e.clientX - rect.left}px`;
+            overlay.classList.remove('hidden');
+        }
+        function hide() { overlay.classList.add('hidden'); }
+        bar.addEventListener('mousemove', update);
+        bar.addEventListener('mouseleave', hide);
+        return true;
+    };
+    if (!connect()) {
+        const mo = new MutationObserver(() => { if (connect()) { mo.disconnect(); } });
+        mo.observe(playerContainer, { childList: true, subtree: true });
+    }
+}
+</script>
+
+</body>
+</html>

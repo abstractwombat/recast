@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Stream - Job #{{ job.id }} - Recast</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #1f2937;
+            margin: 0;
+            padding: 0;
+        }
+        .video-container {
+            width: 100%;
+            height: 100vh;
+            background-color: #000;
+            position: relative;
+        }
+        .overlay {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 1000;
+        }
+        .redirect-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.95);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+    </style>
+</head>
+<body>
+
+<div class="video-container">
+    <!-- Status Overlay -->
+    <div class="overlay" id="status-overlay">
+        <div id="status-text">🔴 LIVE</div>
+        <div id="position-text" class="text-sm text-gray-400 mt-1"></div>
+    </div>
+
+    <!-- Waiting Overlay (shown when stream not yet available) -->
+    <div class="redirect-overlay hidden" id="waiting-overlay">
+        <div class="text-center bg-gray-800 p-8 rounded-xl max-w-md">
+            <div class="text-6xl mb-4 pulse">⏳</div>
+            <h2 class="text-2xl font-bold text-white mb-4">Waiting for Stream...</h2>
+            <p class="text-gray-300 mb-2">Recording will begin at:</p>
+            <p class="text-blue-400 font-mono text-lg mb-4" id="scheduled-time"></p>
+            <p class="text-gray-400 text-sm">The page will automatically load the stream when it becomes available.</p>
+            <div class="mt-6">
+                <a href="/" class="text-blue-400 hover:text-blue-300 transition text-sm">
+                    ← Return to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Player -->
+    <video id="video" controls class="w-full h-full"></video>
+
+    <!-- Redirect Overlay (hidden by default) -->
+    <div class="redirect-overlay hidden" id="redirect-overlay">
+        <div class="text-center bg-gray-800 p-8 rounded-xl max-w-md">
+            <div class="text-6xl mb-4">✓</div>
+            <h2 class="text-2xl font-bold text-white mb-4">Recording Complete!</h2>
+            <p class="text-gray-300 mb-2">Your viewing position: <span id="final-position" class="text-blue-400 font-mono"></span></p>
+            <p class="text-gray-400 text-sm mb-6">Redirecting to permanent recording in <span id="countdown" class="text-white font-bold">5</span> seconds...</p>
+            <div class="flex gap-3 justify-center">
+                <a href="/playback/{{ job.id }}" id="redirect-link" class="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition">
+                    Go to Recording Now
+                </a>
+                <button onclick="cancelRedirect()" class="bg-gray-600 text-white px-6 py-3 rounded-lg hover:bg-gray-700 transition">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const jobId = "{{ job.id }}";
+const streamUrl = "{{ stream_url }}";
+const videoElement = document.getElementById('video');
+const statusOverlay = document.getElementById('status-overlay');
+const redirectOverlay = document.getElementById('redirect-overlay');
+const positionText = document.getElementById('position-text');
+
+let hls = null;
+let savedPosition = 0;
+let redirectTimer = null;
+let redirectCountdown = 5;
+let streamCheckInterval = null;
+let isStreamAvailable = false;
+
+// Session storage key
+const STORAGE_KEY = `recast_position_${jobId}`;
+
+// Load saved position
+function loadSavedPosition() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+        const data = JSON.parse(saved);
+        return data.position || 0;
+    }
+    return 0;
+}
+
+// Save position
+function savePosition() {
+    if (videoElement.currentTime > 0) {
+        const data = {
+            position: videoElement.currentTime,
+            timestamp: new Date().toISOString()
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        savedPosition = videoElement.currentTime;
+    }
+}
+
+// Format time as HH:MM:SS
+function formatTime(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+// Update position display
+function updatePositionDisplay() {
+    if (videoElement.currentTime > 0) {
+        positionText.textContent = `Position: ${formatTime(videoElement.currentTime)}`;
+    }
+}
+
+// Check if stream is available
+async function checkStreamAvailability() {
+    try {
+        const response = await fetch(streamUrl, { method: 'HEAD' });
+        return response.ok;
+    } catch (error) {
+        return false;
+    }
+}
+
+// Show waiting overlay
+function showWaitingOverlay(scheduledStartTime) {
+    document.getElementById('waiting-overlay').classList.remove('hidden');
+    document.getElementById('scheduled-time').textContent = new Date(scheduledStartTime).toLocaleString();
+    videoElement.style.display = 'none';
+    statusOverlay.style.display = 'none';
+}
+
+// Hide waiting overlay
+function hideWaitingOverlay() {
+    document.getElementById('waiting-overlay').classList.add('hidden');
+    videoElement.style.display = 'block';
+    statusOverlay.style.display = 'block';
+}
+
+// Initialize HLS player
+function initializeHlsPlayer() {
+    if (Hls.isSupported()) {
+        hls = new Hls({
+            liveDurationInfinity: true,
+            liveSyncDurationCount: 3,
+            maxBufferLength: 60,
+            maxMaxBufferLength: 600
+        });
+        
+        hls.loadSource(streamUrl);
+        hls.attachMedia(videoElement);
+        
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            isStreamAvailable = true;
+            hideWaitingOverlay();
+            
+            // Stop checking for stream availability
+            if (streamCheckInterval) {
+                clearInterval(streamCheckInterval);
+            }
+            
+            // Seek to saved position or start from beginning
+            const savedPos = loadSavedPosition();
+            if (savedPos > 0) {
+                videoElement.currentTime = savedPos;
+                showToast(`Resuming from ${formatTime(savedPos)}`);
+            } else {
+                // Start from beginning (earliest segment)
+                videoElement.currentTime = 0;
+                showToast('Starting from beginning');
+            }
+            
+            videoElement.play().catch(e => {
+                console.error("Autoplay failed:", e);
+            });
+        });
+        
+        hls.on(Hls.Events.ERROR, function (event, data) {
+            if (data.fatal) {
+                console.error('HLS Error:', data);
+                
+                // Check if stream ended or not yet available
+                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                    if (isStreamAvailable) {
+                        // Stream was available but now ended
+                        checkIfStreamEnded();
+                    } else {
+                        // Stream not yet available, keep waiting
+                        console.log('Stream not yet available, will retry...');
+                    }
+                }
+            }
+        });
+    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+        videoElement.src = streamUrl;
+        videoElement.addEventListener('loadedmetadata', function() {
+            isStreamAvailable = true;
+            hideWaitingOverlay();
+            
+            const savedPos = loadSavedPosition();
+            if (savedPos > 0) {
+                videoElement.currentTime = savedPos;
+            }
+            videoElement.play();
+        });
+        
+        videoElement.addEventListener('error', function() {
+            if (!isStreamAvailable) {
+                console.log('Stream not yet available, will retry...');
+            }
+        });
+    }
+}
+
+// Wait for stream to become available
+async function waitForStream() {
+    const available = await checkStreamAvailability();
+    
+    if (available) {
+        console.log('Stream is available, initializing player...');
+        initializeHlsPlayer();
+    } else {
+        console.log('Stream not yet available, showing waiting overlay...');
+        
+        // Get job info to show scheduled time
+        try {
+            const response = await fetch(`/api/job_status/${jobId}`);
+            const job = await response.json();
+            showWaitingOverlay(job.start_time);
+        } catch (error) {
+            showWaitingOverlay('Soon');
+        }
+        
+        // Check every 5 seconds
+        streamCheckInterval = setInterval(async () => {
+            const nowAvailable = await checkStreamAvailability();
+            if (nowAvailable) {
+                clearInterval(streamCheckInterval);
+                initializeHlsPlayer();
+            }
+        }, 5000);
+    }
+}
+
+// Check if stream has ended
+async function checkIfStreamEnded() {
+    try {
+        const response = await fetch(`/api/job_status/${jobId}`);
+        const job = await response.json();
+        
+        if (job.status === 'CONVERTING' || job.status === 'COMPLETED') {
+            // Stream ended, show redirect overlay
+            showRedirectOverlay();
+        }
+    } catch (error) {
+        console.error('Error checking job status:', error);
+    }
+}
+
+// Show redirect overlay
+function showRedirectOverlay() {
+    savePosition();
+    
+    document.getElementById('final-position').textContent = formatTime(savedPosition);
+    document.getElementById('redirect-link').href = `/playback/{{ job.id }}?t=${Math.floor(savedPosition)}`;
+    redirectOverlay.classList.remove('hidden');
+    
+    // Start countdown
+    redirectCountdown = 5;
+    updateCountdown();
+    redirectTimer = setInterval(() => {
+        redirectCountdown--;
+        updateCountdown();
+        
+        if (redirectCountdown <= 0) {
+            window.location.href = `/playback/{{ job.id }}?t=${Math.floor(savedPosition)}`;
+        }
+    }, 1000);
+}
+
+function updateCountdown() {
+    document.getElementById('countdown').textContent = redirectCountdown;
+}
+
+function cancelRedirect() {
+    if (redirectTimer) {
+        clearInterval(redirectTimer);
+    }
+    redirectOverlay.classList.add('hidden');
+}
+
+// Show toast notification
+function showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'fixed top-4 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg z-50';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.remove();
+    }, 3000);
+}
+
+// Event listeners
+videoElement.addEventListener('timeupdate', () => {
+    updatePositionDisplay();
+});
+
+// Save position periodically
+setInterval(savePosition, 10000);
+
+// Save on pause
+videoElement.addEventListener('pause', savePosition);
+
+// Save on seek
+videoElement.addEventListener('seeked', savePosition);
+
+// Save before page unload
+window.addEventListener('beforeunload', savePosition);
+
+// Poll for stream status
+setInterval(checkIfStreamEnded, 5000);
+
+// Initialize player (with stream availability check)
+waitForStream();
+</script>
+
+</body>
+</html>

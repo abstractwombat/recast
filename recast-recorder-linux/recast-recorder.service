@@ -1,0 +1,15 @@
+[Unit]
+Description=Recast Linux Recorder
+After=network.target
+
+[Service]
+Type=simple
+User=recast
+WorkingDirectory=/opt/recast
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/user/$(id -u recast) && chown recast:recast /run/user/$(id -u recast) && chmod 700 /run/user/$(id -u recast)'
+ExecStart=/usr/bin/dbus-run-session /opt/recast/venv/bin/python3 /opt/recast/recast_recorder.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

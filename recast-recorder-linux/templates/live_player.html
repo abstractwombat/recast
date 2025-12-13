@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Live Stream</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/controls.css" />
+    <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/shaka-player.ui.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #player-container { position: relative; }
+        video {
+            width: 100%;
+            max-width: 1280px;
+            height: auto;
+        }
+        /* Ensure Shaka seek bar is visible and not hidden under the controls */
+        .shaka-controls-container { z-index: 10 !important; }
+        .shaka-bottom-controls { display: flex !important; flex-direction: column !important; align-items: stretch !important; gap: 6px !important; padding-bottom: 6px !important; }
+        .shaka-seek-bar-container { order: 0 !important; width: 100% !important; display: block !important; height: 8px !important; margin: 4px 10px 0 10px !important; position: relative !important; }
+        .shaka-seek-bar { height: 8px !important; }
+        .shaka-controls-button-panel { order: 1 !important; width: 100% !important; }
+    </style>
+</head>
+<body>
+    <div id="player-container" style="width:100%;max-width:1280px;">
+        <video id="video" autoplay muted playsinline style="width:100%;height:auto;"></video>
+    </div>
+    <script>
+        const video = document.getElementById('video');
+        const container = document.getElementById('player-container');
+        const params = new URLSearchParams(window.location.search);
+        const jobId = params.get('job_id') || 'default';
+        const STORAGE_KEY = `recast_live_position_${jobId}`;
+        const streamUrl = '/live_hls/stream.m3u8';
+
+        function loadSavedPosition() {
+            try {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                if (!saved) return 0;
+                const data = JSON.parse(saved);
+                return Number(data.position || 0) || 0;
+            } catch { return 0; }
+        }
+
+        function clampToSeekable(t) {
+            try {
+                if (video.seekable && video.seekable.length > 0) {
+                    const start = video.seekable.start(0);
+                    const end = video.seekable.end(video.seekable.length - 1);
+                    if (!isFinite(start) || !isFinite(end)) return t;
+                    // Keep within seekable window
+                    const epsilon = 0.25;
+                    return Math.min(Math.max(t, start), Math.max(start, end - epsilon));
+                }
+            } catch {}
+            return t;
+        }
+
+        function savePosition() {
+            try {
+                if (isFinite(video.currentTime) && video.currentTime > 0) {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify({ position: video.currentTime, ts: Date.now() }));
+                }
+            } catch {}
+        }
+
+        function applyInitialSeek() {
+            const saved = loadSavedPosition();
+            if (saved > 0) {
+                const target = clampToSeekable(saved);
+                try { video.currentTime = target; } catch {}
+            } else {
+                // First viewing: start from beginning of available buffer
+                try {
+                    if (video.seekable && video.seekable.length > 0) {
+                        const start = video.seekable.start(0);
+                        if (isFinite(start)) video.currentTime = start + 0.25;
+                    }
+                } catch {}
+            }
+        }
+
+        if (window.shaka) {
+            shaka.polyfill.installAll();
+            const player = new shaka.Player(video);
+            const ui = new shaka.ui.Overlay(player, container, video);
+            ui.configure({
+                addSeekBar: true,
+                controlPanelElements: ['play_pause', 'time_and_duration', 'mute', 'volume', 'spacer', 'rewind', 'fast_forward', 'picture_in_picture', 'airplay', 'cast', 'fullscreen', 'playback_rate'],
+                castReceiverAppId: 'CC1AD845'
+            });
+            try { video.removeAttribute('controls'); } catch {}
+            player.configure({ streaming: { rebufferingGoal: 2, bufferingGoal: 10 } });
+            player.addEventListener('error', e => console.error('Shaka error', e));
+            player.load(streamUrl).then(() => {
+                applyInitialSeek();
+                const tryPlay = () => { video.play().catch(()=>{}); video.removeEventListener('canplay', tryPlay); };
+                video.addEventListener('canplay', tryPlay);
+                video.play().catch(()=>{});
+            }).catch(err => console.error('Load failed', err));
+            setupKeyboardShortcuts();
+        } else {
+            video.src = streamUrl;
+            video.addEventListener('loadedmetadata', function () {
+                try { video.controls = true; } catch {}
+                applyInitialSeek();
+                const tryPlay = () => { video.play().catch(()=>{}); video.removeEventListener('canplay', tryPlay); };
+                video.addEventListener('canplay', tryPlay);
+                video.play().catch(()=>{});
+            });
+        }
+
+        // Periodic save
+        const interval = setInterval(savePosition, 10000);
+        video.addEventListener('pause', savePosition);
+        video.addEventListener('seeking', savePosition);
+        document.addEventListener('visibilitychange', () => { if (document.hidden) savePosition(); });
+        window.addEventListener('beforeunload', () => { savePosition(); clearInterval(interval); });
+        function setupKeyboardShortcuts() {
+            document.addEventListener('keydown', (e) => {
+                if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+                if (e.key === 'j' || e.key === 'J') { try { video.currentTime = Math.max(0, video.currentTime - 10); } catch {} }
+                if (e.key === 'l' || e.key === 'L') { try { video.currentTime = Math.min((video.duration||1e9), video.currentTime + 30); } catch {} }
+                if (e.key === 'k' || e.key === 'K' || e.code === 'Space') { try { if (video.paused) video.play(); else video.pause(); } catch {} }
+            });
+        }
+    </script>
+</body>
+</html>

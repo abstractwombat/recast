@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recast</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <style>
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+    .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+    .status-badge { padding: 4px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+    .status-recording { background: #fecaca; color: #991b1b; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+  </style>
+</head>
+<body>
+  <div class="min-h-screen p-6">
+    <div class="max-w-7xl mx-auto">
+      <!-- Header -->
+      <div class="mb-8 flex items-end justify-between">
+        <div>
+          <h1 class="text-4xl font-bold text-white mb-2">🎬 Recast</h1>
+          <p class="text-purple-100">timeshift and record live streams</p>
+        </div>
+        <div class="flex gap-3">
+          <a href="/admin" class="bg-white text-purple-600 px-6 py-3 rounded-lg font-semibold hover:bg-purple-50 transition">Admin</a>
+          <button onclick="refreshData()" class="bg-purple-800 text-white px-6 py-3 rounded-lg font-semibold hover:bg-purple-900 transition">🔄 Refresh</button>
+        </div>
+      </div>
+
+      <!-- Live Streams -->
+      <div class="card p-6 mb-6" id="live-card" style="display:none;">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Live Recordings</h2>
+        <div id="live-streams-container">
+          
+        </div>
+      </div>
+
+      <!-- Upcoming Recordings -->
+      {% if upcoming_jobs %}
+      <div class="card p-6 mb-6">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Upcoming Recordings</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead>
+              <tr class="border-b border-gray-200">
+                <th class="text-left py-3 px-4 font-semibold text-gray-700">Title</th>
+                <th class="text-left py-3 px-4 font-semibold text-gray-700">Start Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for job in upcoming_jobs %}
+              <tr class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="py-3 px-4 text-gray-800">{{ job.title or job.url or ('Job #' ~ job.id) }}</td>
+                <td class="py-3 px-4 text-gray-600">{{ job.start_time_formatted }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Recordings Library -->
+      {% if recordings %}
+      <div class="card p-6">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Recordings Library</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {% for recording in recordings %}
+          <div class="border border-gray-200 rounded-lg p-4 hover:shadow-lg transition {% if not recording.recorder_online %}opacity-50{% endif %}">
+            <div class="mb-3">
+              <h3 class="font-semibold text-gray-800 mb-1">{{ recording.title or ('Job #' ~ recording.job_id) }}</h3>
+              <p class="text-sm text-gray-600 truncate" title="{{ recording.url }}">{{ recording.url }}</p>
+            </div>
+            <div class="text-sm text-gray-500 mb-3">
+              <p>Start: {{ recording.start_time_formatted }}</p>
+              <p>End: {{ recording.end_time_formatted }}</p>
+              <p>Size: {{ (recording.file_size_bytes / 1024 / 1024) | round(1) }} MB</p>
+              <p>Host:
+                <span class="text-gray-700">{{ recording.recorder_host or 'unknown' }}</span>
+                {% if recording.recorder_online %}
+                  <span class="text-green-700">(online)</span>
+                {% else %}
+                  <span class="text-gray-500">(offline)</span>
+                {% endif %}
+              </p>
+            </div>
+            <div class="flex gap-2">
+              {% if recording.recorder_online %}
+                <a href="/playback/{{ recording.job_id }}" target="_blank" class="flex-1 bg-blue-600 text-white text-center py-2 rounded hover:bg-blue-700 transition text-sm">▶ Play</a>
+                <a href="/recordings/{{ recording.filename }}" download class="flex-1 bg-green-600 text-white text-center py-2 rounded hover:bg-green-700 transition text-sm">⬇ Download</a>
+              {% else %}
+                <span class="flex-1 bg-gray-300 text-gray-600 text-center py-2 rounded cursor-not-allowed text-sm" title="Host offline">▶ Play</span>
+                <span class="flex-1 bg-gray-300 text-gray-600 text-center py-2 rounded cursor-not-allowed text-sm" title="Host offline">⬇ Download</span>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <script>
+  async function loadLiveStreams() {
+    try {
+      const response = await fetch('/api/live_streams');
+      const data = await response.json();
+      const container = document.getElementById('live-streams-container');
+      const liveCard = document.getElementById('live-card');
+      if (data.live_jobs && data.live_jobs.length > 0) {
+        if (liveCard) liveCard.style.display = '';
+        container.innerHTML = data.live_jobs.map(job => {
+          const ready = !!job.live_ready;
+          const badge = ready ? '<span class="status-badge status-recording">LIVE</span>' : '<span class="status-badge status-assigned">STARTING</span>';
+          const link = (ready && job.live_stream_url) ? `
+            <a href="${job.live_stream_url}" target="_blank" class="inline-block bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition text-sm">📺 Watch Live Stream</a>
+          ` : `
+            <span class="inline-block bg-gray-300 text-gray-600 px-4 py-2 rounded text-sm cursor-not-allowed" title="Starting up">⏳ Starting up</span>
+          `;
+          return `
+          <div class="border border-red-200 rounded-lg p-4 mb-4 bg-red-50">
+            <div class="flex justify-between items-start mb-2">
+              <div>
+                <h3 class="font-semibold text-gray-800">${job.title || ('Job #' + job.id)}</h3>
+                <p class="text-sm text-gray-600">${job.url}</p>
+              </div>
+              ${badge}
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Host: ${job.hostname}</p>
+            <div class="flex gap-2">${link}</div>
+          </div>`;
+        }).join('');
+      } else {
+        container.innerHTML = '';
+        if (liveCard) liveCard.style.display = 'none';
+      }
+    } catch (e) {
+      console.error('Error loading live streams', e);
+    }
+  }
+  function refreshData() { location.reload(); }
+
+  loadLiveStreams();
+  setInterval(loadLiveStreams, 10000);
+  </script>
+</body>
+</html>

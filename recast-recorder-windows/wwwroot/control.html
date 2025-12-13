@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recast Windows Recorder Control</title>
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background:#f8fafc; color:#111827; margin:0; }
+    .container { max-width: 880px; margin: 32px auto; padding: 0 16px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    .row { display:flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    select { padding: 8px 10px; border:1px solid #d1d5db; border-radius: 8px; background:#fff; }
+    button { padding: 8px 12px; border-radius: 8px; border: 0; cursor: pointer; font-weight: 600; }
+    .btn { background:#111827; color:#fff; }
+    .btn.stop { background:#dc2626; }
+    .btn.secondary { background:#374151; }
+    .muted { color:#6b7280; font-size: 13px; }
+    .status { margin-top: 12px; font-size: 14px; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:9999px; font-size:12px; font-weight:600; }
+    .on { background:#dcfce7; color:#166534; }
+    .off { background:#fee2e2; color:#991b1b; }
+    .table { width:100%; border-collapse: collapse; margin-top: 16px; }
+    .table th, .table td { padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Recorder VNC Control (Windows)</h1>
+      <p class="muted">Launches Chrome sessions and ensures TightVNC is running. Connect with a VNC client to <em>host:port</em>.</p>
+      <div class="row" style="margin-top:12px;">
+        <label for="controller">Controller:</label>
+        <select id="controller"></select>
+        <label for="mode">Mode:</label>
+        <select id="mode">
+          <option value="manual" selected>Manual</option>
+          <option value="automated">Automated</option>
+        </select>
+        <input type="text" id="url" placeholder="https://www.google.com/" style="flex:1; min-width:220px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px;" />
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <label><input type="checkbox" id="keepOpen" /> Keep open on error</label>
+        <button class="btn" id="btnLaunch">Launch Session</button>
+        <button class="btn stop" id="btnClose">Close Session</button>
+        <button class="btn secondary" id="btnStart">Start VNC</button>
+        <button class="btn secondary" id="btnStop">Stop VNC</button>
+        <button class="btn" id="btnRefresh">Refresh</button>
+      </div>
+      <div class="status" id="status"></div>
+
+      <table class="table" id="table">
+        <thead>
+          <tr>
+            <th>Controller</th>
+            <th>Mode</th>
+            <th>VNC</th>
+            <th>Port</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function fetchStatus() {
+      const res = await fetch('/api/vnc/status');
+      if (!res.ok) throw new Error('status failed');
+      return res.json();
+    }
+
+    function populateControllers(data) {
+      const sel = document.getElementById('controller');
+      const tbody = document.querySelector('#table tbody');
+      const prev = sel.value;
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+      const controllers = data.controllers || {};
+      const names = Object.keys(controllers).sort();
+      for (const name of names) {
+        const opt = document.createElement('option');
+        opt.value = name; opt.textContent = name; sel.appendChild(opt);
+        const info = controllers[name] || {};
+        const row = document.createElement('tr');
+        const running = !!info.vnc_running;
+        row.innerHTML = `
+          <td>${name}</td>
+          <td>${info.mode || 'none'}</td>
+          <td><span class="badge ${running ? 'on' : 'off'}">${running ? 'RUNNING' : 'OFF'}</span></td>
+          <td>${info.vnc_port || ''}</td>
+        `;
+        tbody.appendChild(row);
+      }
+      if (names.includes(prev)) sel.value = prev; else if (names.length > 0) sel.value = names[0];
+    }
+
+    async function refresh() {
+      try {
+        const data = await fetchStatus();
+        populateControllers(data);
+        const controllers = data.controllers || {}; const current = controllers[document.getElementById('controller').value];
+        const status = document.getElementById('status');
+        if (current && current.vnc_running) {
+          const host = window.location.hostname; const port = current.vnc_port || 5900; const url = `vnc://${host}:${port}`;
+          status.innerHTML = `Connect with: <strong>${host}:${port}</strong> · <a href="${url}">${url}</a>`;
+        } else { status.textContent = ''; }
+      } catch { document.getElementById('status').textContent = 'Failed to load status'; }
+    }
+
+    async function startVNC() {
+      const controller = document.getElementById('controller').value;
+      const res = await fetch('/api/vnc/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ controller }) });
+      await refresh();
+    }
+    async function stopVNC() {
+      const controller = document.getElementById('controller').value;
+      const res = await fetch('/api/vnc/stop', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ controller }) });
+      await refresh();
+    }
+    async function launchSession() {
+      const controller = document.getElementById('controller').value;
+      const mode = document.getElementById('mode').value || 'manual';
+      const keep_open_on_error = document.getElementById('keepOpen').checked;
+      const url = document.getElementById('url').value || 'https://www.google.com/';
+      const res = await fetch('/api/session/launch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ controller, url, mode, keep_open_on_error }) });
+      await refresh();
+    }
+    async function closeSession() {
+      const controller = document.getElementById('controller').value;
+      const res = await fetch('/api/session/stop', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ controller }) });
+      await refresh();
+    }
+
+    document.getElementById('btnLaunch').addEventListener('click', launchSession);
+    document.getElementById('btnClose').addEventListener('click', closeSession);
+    document.getElementById('btnStart').addEventListener('click', startVNC);
+    document.getElementById('btnStop').addEventListener('click', stopVNC);
+    document.getElementById('btnRefresh').addEventListener('click', refresh);
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

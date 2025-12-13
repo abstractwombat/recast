@@ -1,0 +1,14 @@
+[Unit]
+Description=Recast Server
+After=network.target
+
+[Service]
+Type=simple
+User=recast
+WorkingDirectory=/opt/recast
+ExecStart=/opt/recast/venv/bin/python3 /opt/recast/recast_server.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

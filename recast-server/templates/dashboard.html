@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recast Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-assigned { background: #dbeafe; color: #1e40af; }
+        .status-recording { background: #fecaca; color: #991b1b; animation: pulse 2s infinite; }
+        .status-completed { background: #d1fae5; color: #065f46; }
+        .status-failed { background: #fee2e2; color: #991b1b; }
+        .status-idle { background: #e5e7eb; color: #374151; }
+        .status-active { background: #d1fae5; color: #065f46; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="min-h-screen p-6">
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <div class="mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">🎬 Recast</h1>
+            <p class="text-purple-100">timeshift and record live streams</p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="mb-6 flex gap-4">
+            <a href="/schedule" class="bg-white text-purple-600 px-6 py-3 rounded-lg font-semibold hover:bg-purple-50 transition">
+                + Schedule New Recording
+            </a>
+            <button onclick="refreshData()" class="bg-purple-800 text-white px-6 py-3 rounded-lg font-semibold hover:bg-purple-900 transition">
+                🔄 Refresh
+            </button>
+        </div>
+
+        <!-- Recorders Status -->
+        <div class="card p-6 mb-6">
+            <h2 class="text-2xl font-bold mb-4 text-gray-800">Active Recorders</h2>
+            <div id="recorders-container">
+                {% if recorders %}
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {% for recorder in recorders %}
+                    <div class="border border-gray-200 rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 class="font-semibold text-gray-800">{{ recorder.id }}</h3>
+                            <span class="status-badge status-{{ recorder.status.lower() }}">{{ recorder.status }}</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Host: {{ recorder.hostname }}{% if recorder.ip_address %} (IP: {{ recorder.ip_address }}){% endif %}</p>
+                        <p class="text-sm text-gray-500">Last seen: {{ recorder.last_heartbeat }}</p>
+                        {% if recorder.current_job_id %}
+                        <p class="text-sm text-blue-600 mt-2">Recording Job #{{ recorder.current_job_id }}</p>
+                        {% endif %}
+                        <div class="mt-3">
+                            <a href="http://{{ recorder.ip_address or recorder.hostname }}:5001/control" target="_blank"
+                               class="inline-block bg-gray-800 text-white px-3 py-2 rounded text-sm hover:bg-gray-900">
+                                🛠 Recorder Control
+                            </a>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-gray-500 italic">No active recorders</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Live Streams -->
+        <div class="card p-6 mb-6">
+            <h2 class="text-2xl font-bold mb-4 text-gray-800">Live Recordings</h2>
+            <div id="live-streams-container">
+                <p class="text-gray-500 italic">Loading live streams...</p>
+            </div>
+        </div>
+
+        <!-- Recent Jobs -->
+        <div class="card p-6 mb-6">
+            <h2 class="text-2xl font-bold mb-4 text-gray-800">Recent Jobs</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="border-b border-gray-200">
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">ID</th>
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">Title</th>
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">URL</th>
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">Start Time</th>
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">End Time</th>
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">Status</th>
+                            <th class="text-left py-3 px-4 font-semibold text-gray-700">Recorder</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in jobs %}
+                        <tr class="border-b border-gray-100 hover:bg-gray-50">
+                            <td class="py-3 px-4 text-gray-800">{{ job.id }}</td>
+                            <td class="py-3 px-4 text-gray-800">
+                                <button data-title="{{ (job.title or '')|e }}" onclick='renameJob({{ job.id }}, this.dataset.title)'
+                                        class="ml-2 text-blue-600 hover:text-blue-800 text-sm">✎</button>
+                                <span id="job-title-j-{{ job.id }}">{{ job.title or '' }}</span>
+                            </td>
+                            <td class="py-3 px-4 text-gray-600 truncate max-w-xs" title="{{ job.url }}">{{ job.url }}</td>
+                            <td class="py-3 px-4 text-gray-600">{{ job.start_time_formatted }}</td>
+                            <td class="py-3 px-4 text-gray-600">{{ job.end_time_formatted }}</td>
+                            <td class="py-3 px-4">
+                                <span class="status-badge status-{{ job.status.lower() }}">{{ job.status }}</span>
+                                {% if job.status == 'PENDING' %}
+                                <button onclick="cancelJob({{ job.id }})" title="Cancel"
+                                        class="ml-2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-100 text-red-700 hover:bg-red-200">
+                                    ✖
+                                </button>
+                                {% endif %}
+                            </td>
+                            <td class="py-3 px-4 text-gray-600">{{ job.recorder_id or '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Recordings Library -->
+        <div class="card p-6">
+            <h2 class="text-2xl font-bold mb-4 text-gray-800">Recordings Library</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for recording in recordings %}
+                <div class="border border-gray-200 rounded-lg p-4 hover:shadow-lg transition {% if not recording.recorder_online %}opacity-50{% endif %}">
+                    <div class="mb-3">
+                        <h3 class="font-semibold text-gray-800 mb-1">
+                            <span id="job-title-r-{{ recording.job_id }}">{{ recording.title or recording.url }}</span>
+                        </h3>
+                    </div>
+                    <div class="text-sm text-gray-500 mb-3">
+                        <p>Start: {{ recording.start_time_formatted }}</p>
+                        <p>End: {{ recording.end_time_formatted }}</p>
+                        <p>Size: {{ (recording.file_size_bytes / 1024 / 1024) | round(1) }} MB</p>
+                        <p>Host: 
+                            <span class="text-gray-700">{{ recording.recorder_host or 'unknown' }}</span>
+                            {% if recording.recorder_online %}
+                                <span class="text-green-700">(online)</span>
+                            {% else %}
+                                <span class="text-gray-500">(offline)</span>
+                            {% endif %}
+                        </p>
+                        <div class="mt-2">
+                            <p class="text-gray-700 text-sm font-semibold">Clients ({{ (recording.clients | length) if recording.clients else 0 }}):</p>
+                            {% if recording.clients %}
+                            <ul id="rec-clients-{{ recording.id }}" data-filename="{{ recording.filename }}">
+                                {% for c in recording.clients %}
+                                <li class="text-xs {% if c.active %}text-green-700{% else %}text-gray-500{% endif %}">{{ c.ip }} {% if c.active %}(active){% endif %}</li>
+                                {% endfor %}
+                            </ul>
+                            {% else %}
+                            <ul id="rec-clients-{{ recording.id }}" data-filename="{{ recording.filename }}">
+                                <li class="text-xs text-gray-400">None</li>
+                            </ul>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="flex-1">
+                            {% if recording.recorder_online %}
+                                <a href="/playback/{{ recording.job_id }}" target="_blank" 
+                                   class="inline-block bg-blue-600 text-white text-center px-3 py-2 rounded hover:bg-blue-700 transition text-sm">
+                                    ▶ Play
+                                </a>
+                            {% else %}
+                                <span class="inline-block bg-gray-300 text-gray-600 text-center px-3 py-2 rounded cursor-not-allowed text-sm" title="Host offline">
+                                    ▶ Play
+                                </span>
+                            {% endif %}
+                        </div>
+                        <div class="ml-auto flex items-center gap-1">
+                            {% if recording.recorder_online %}
+                                <a href="/recordings/{{ recording.filename }}" download title="Download"
+                                   class="w-8 h-8 flex items-center justify-center rounded bg-green-600 text-white hover:bg-green-700 text-sm">⬇</a>
+                                <button data-title="{{ (recording.title or '')|e }}" onclick='renameJob({{ recording.job_id }}, this.dataset.title)' title="Rename"
+                                        class="w-8 h-8 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">✎</button>
+                                <button data-id="{{ recording.id }}" onclick="deleteRecording(this.dataset.id)" title="Delete"
+                                        class="w-8 h-8 flex items-center justify-center rounded bg-red-600 text-white hover:bg-red-700 text-sm">🗑</button>
+                            {% else %}
+                                <span class="w-8 h-8 flex items-center justify-center rounded bg-gray-300 text-gray-600 text-sm cursor-not-allowed" title="Host offline">⬇</span>
+                                <button data-title="{{ (recording.title or '')|e }}" onclick='renameJob({{ recording.job_id }}, this.dataset.title)' title="Rename"
+                                        class="w-8 h-8 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">✎</button>
+                                <span class="w-8 h-8 flex items-center justify-center rounded bg-gray-300 text-gray-600 text-sm cursor-not-allowed" title="Host offline">🗑</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadLiveStreams() {
+    try {
+        const response = await fetch('/api/live_streams');
+        const data = await response.json();
+        const container = document.getElementById('live-streams-container');
+        
+        if (data.live_jobs && data.live_jobs.length > 0) {
+            container.innerHTML = data.live_jobs.map(job => {
+                const ready = !!job.live_ready;
+                const badge = ready ? '<span class="status-badge status-recording">LIVE</span>' : '<span class="status-badge status-assigned">STARTING</span>';
+                const clients = Array.isArray(job.clients) ? job.clients : [];
+                const clientsList = clients.map(c => `<li class="text-xs ${c.active ? 'text-green-700' : 'text-gray-500'}">${c.ip} ${c.active ? '(active)' : ''}</li>`).join('');
+                const link = (ready && job.live_stream_url) ? `
+                    <a href="${job.live_stream_url}" target="_blank" 
+                       class="inline-block bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition text-sm">
+                        📺 Watch Live Stream
+                    </a>` : `
+                    <span class="inline-block bg-gray-300 text-gray-600 px-4 py-2 rounded text-sm cursor-not-allowed" title="Starting up">
+                        ⏳ Starting up
+                    </span>`;
+                return `
+                <div class="border border-red-200 rounded-lg p-4 mb-4 bg-red-50">
+                    <div class="flex justify-between items-start mb-2">
+                        <div>
+                            <h3 class="font-semibold text-gray-800">${job.title || ('Job #' + job.id)}</h3>
+                            <p class="text-sm text-gray-600">${job.url}</p>
+                            <p class="text-xs text-gray-500 mt-1">Start: ${job.live_start_time_formatted || job.start_time_formatted || ''}</p>
+                            <p class="text-xs text-gray-500">End: ${job.end_time_formatted || ''}</p>
+                        </div>
+                        ${badge}
+                    </div>
+                    <p class="text-sm text-gray-600 mb-2">Host: ${job.hostname}</p>
+                    <div class="mb-2">
+                        <p class="text-xs text-gray-700 font-semibold">Clients (${clients.length}):</p>
+                        <ul>${clientsList || '<li class="text-xs text-gray-400">None</li>'}</ul>
+                    </div>
+                    <div class="flex gap-2">
+                        ${link}
+                        <button onclick="stopJob(${job.id})" class="inline-block bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-800 transition text-sm">
+                            ⏹ Stop
+                        </button>
+                    </div>
+                </div>`;
+            }).join('');
+        } else {
+            container.innerHTML = '<p class="text-gray-500 italic">No live recordings at the moment</p>';
+        }
+    } catch (error) {
+        console.error('Error loading live streams:', error);
+    }
+}
+
+function refreshData() {
+    location.reload();
+}
+
+async function stopJob(jobId) {
+    try {
+        const res = await fetch(`/api/stop_job/${jobId}`, { method: 'POST' });
+        if (res.ok) {
+            // Soft feedback then refresh
+            await loadLiveStreams();
+            setTimeout(() => location.reload(), 500);
+        } else {
+            alert('Failed to stop job');
+        }
+    } catch (e) {
+        console.error('Stop failed', e);
+        alert('Stop failed');
+    }
+}
+
+async function deleteRecording(recordingId) {
+    if (!confirm('Delete this recording? This will remove the file from the recorder and the database.')) return;
+    try {
+        const res = await fetch(`/api/recordings/${recordingId}/delete`, { method: 'POST' });
+        if (res.ok) {
+            location.reload();
+        } else {
+            let msg = 'Delete failed';
+            try { const data = await res.json(); if (data && data.message) msg = data.message; } catch {}
+            alert(msg);
+        }
+    } catch (e) {
+        console.error('Delete failed', e);
+        alert('Delete failed');
+    }
+}
+
+async function renameJob(jobId, currentTitle) {
+    const title = prompt('Enter new title:', currentTitle || '');
+    if (title === null) return;
+    try {
+        const res = await fetch(`/api/jobs/${jobId}/title`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        if (res.ok) {
+            const el1 = document.getElementById(`job-title-j-${jobId}`);
+            if (el1) el1.textContent = title;
+            const el2 = document.getElementById(`job-title-r-${jobId}`);
+            if (el2) el2.textContent = title;
+        } else {
+            alert('Failed to rename job');
+        }
+    } catch (e) {
+        console.error('Rename failed', e);
+        alert('Rename failed');
+    }
+}
+
+async function cancelJob(jobId) {
+    try {
+        const res = await fetch(`/api/cancel_job/${jobId}`, { method: 'POST' });
+        if (res.ok) {
+            location.reload();
+        } else {
+            alert('Failed to cancel job');
+        }
+    } catch (e) {
+        console.error('Cancel failed', e);
+        alert('Cancel failed');
+    }
+}
+
+async function loadRecordingClients() {
+    const items = Array.from(document.querySelectorAll('ul[id^="rec-clients-"][data-filename]'));
+    for (const el of items) {
+        const fn = el.dataset.filename;
+        if (!fn) continue;
+        try {
+            const res = await fetch(`/api/recording_clients/${encodeURIComponent(fn)}`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            const clients = Array.isArray(data.clients) ? data.clients : [];
+            if (clients.length === 0) {
+                el.innerHTML = '<li class="text-xs text-gray-400">None</li>';
+            } else {
+                el.innerHTML = clients.map(c => `<li class="text-xs ${c.active ? 'text-green-700' : 'text-gray-500'}">${c.ip} ${c.active ? '(active)' : ''}</li>`).join('');
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+}
+
+// Auto-refresh live streams every 10 seconds
+loadLiveStreams();
+setInterval(loadLiveStreams, 10000);
+// Auto-refresh recording clients every 10 seconds
+loadRecordingClients();
+setInterval(loadRecordingClients, 10000);
+</script>
+
+</body>
+</html>
