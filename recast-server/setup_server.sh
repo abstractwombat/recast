@@ -32,21 +32,6 @@ if [ "$EUID" -eq 0 ]; then
     fi
 fi
 
-# Get configuration
-read -p "Enter recorder hostname (e.g., wilma): " RECORDER_HOSTNAME
-read -p "Enter recorder IP address (e.g., 192.168.0.151): " RECORDER_IP
-
-echo ""
-echo "Configuration:"
-echo "  Recorder hostname: $RECORDER_HOSTNAME"
-echo "  Recorder IP: $RECORDER_IP"
-echo ""
-read -p "Continue? (y/n): " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    exit 1
-fi
-
 echo ""
 echo "Step 1: Creating recast user..."
 sudo useradd -r -s /bin/bash -d /opt/recast -m recast 2>/dev/null || echo "User already exists"
@@ -69,14 +54,9 @@ sudo -u recast python3 -m venv venv
 sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && if [ -f /opt/recast/requirements.txt ]; then pip install -r /opt/recast/requirements.txt; else pip install Flask requests; fi"
 
 echo ""
-echo "Step 5: Configuring hostname resolution and local recordings directory..."
+echo "Step 5: Creating recordings directory..."
 sudo mkdir -p /opt/recast/recordings
 sudo chown recast:recast /opt/recast/recordings
-
-# Add to /etc/hosts if not already there
-if ! grep -q "$RECORDER_HOSTNAME" /etc/hosts; then
-    echo "$RECORDER_IP $RECORDER_HOSTNAME" | sudo tee -a /etc/hosts
-fi
 
 echo ""
 echo "Step 6: Creating configuration file..."
