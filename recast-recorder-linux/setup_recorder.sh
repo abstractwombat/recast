@@ -35,11 +35,53 @@ if [ "$EUID" -eq 0 ]; then
     fi
 fi
 
-# Get configuration
-read -p "Enter management server hostname (e.g., kate): " MANAGER_HOSTNAME
-read -p "Enter management server IP address (e.g., 192.168.0.150): " MANAGER_IP
-read -p "Enter this recorder's hostname (e.g., wilma): " RECORDER_HOSTNAME
-read -p "Enter recorder ID (e.g., recorder-wilma-01): " RECORDER_ID
+# Load defaults from existing config if present
+CONFIG_FILE="/opt/recast/config.toml"
+DEFAULT_RECORDER_ID=""
+DEFAULT_RECORDER_HOSTNAME=""
+DEFAULT_MANAGER_URL=""
+DEFAULT_MANAGER_HOSTNAME=""
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Found existing config at $CONFIG_FILE, loading defaults..."
+    DEFAULT_RECORDER_ID=$(grep -E '^id\s*=' "$CONFIG_FILE" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+    DEFAULT_RECORDER_HOSTNAME=$(grep -E '^hostname\s*=' "$CONFIG_FILE" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+    DEFAULT_MANAGER_URL=$(grep -E '^management_server_url\s*=' "$CONFIG_FILE" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+    # Extract hostname from URL (e.g., http://kate:5000 -> kate)
+    DEFAULT_MANAGER_HOSTNAME=$(echo "$DEFAULT_MANAGER_URL" | sed 's|http://\([^:]*\):.*|\1|')
+    echo ""
+fi
+
+# Get configuration with defaults
+if [ -n "$DEFAULT_MANAGER_HOSTNAME" ]; then
+    read -p "Enter management server hostname [$DEFAULT_MANAGER_HOSTNAME]: " MANAGER_HOSTNAME
+    MANAGER_HOSTNAME=${MANAGER_HOSTNAME:-$DEFAULT_MANAGER_HOSTNAME}
+else
+    read -p "Enter management server hostname (e.g., kate): " MANAGER_HOSTNAME
+fi
+
+# Try to get current IP from /etc/hosts for the manager hostname
+DEFAULT_MANAGER_IP=$(grep -E "\s$MANAGER_HOSTNAME\$" /etc/hosts 2>/dev/null | awk '{print $1}' | head -1)
+if [ -n "$DEFAULT_MANAGER_IP" ]; then
+    read -p "Enter management server IP address [$DEFAULT_MANAGER_IP]: " MANAGER_IP
+    MANAGER_IP=${MANAGER_IP:-$DEFAULT_MANAGER_IP}
+else
+    read -p "Enter management server IP address (e.g., 192.168.0.150): " MANAGER_IP
+fi
+
+if [ -n "$DEFAULT_RECORDER_HOSTNAME" ]; then
+    read -p "Enter this recorder's hostname [$DEFAULT_RECORDER_HOSTNAME]: " RECORDER_HOSTNAME
+    RECORDER_HOSTNAME=${RECORDER_HOSTNAME:-$DEFAULT_RECORDER_HOSTNAME}
+else
+    read -p "Enter this recorder's hostname (e.g., wilma): " RECORDER_HOSTNAME
+fi
+
+if [ -n "$DEFAULT_RECORDER_ID" ]; then
+    read -p "Enter recorder ID [$DEFAULT_RECORDER_ID]: " RECORDER_ID
+    RECORDER_ID=${RECORDER_ID:-$DEFAULT_RECORDER_ID}
+else
+    read -p "Enter recorder ID (e.g., recorder-wilma-01): " RECORDER_ID
+fi
 
 echo ""
 echo "Configuration:"
@@ -102,7 +144,6 @@ fi
 
 echo ""
 echo "Step 7: Creating configuration file..."
-CONFIG_FILE="/opt/recast/config.toml"
 EXAMPLE_FILE="$SCRIPT_DIR/config.toml.example"
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -129,7 +170,8 @@ sudo cp -r "$SCRIPT_DIR/browser_controllers" /opt/recast/
 sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/
 sudo cp "$SCRIPT_DIR/recast-recorder.service" /opt/recast/recast-recorder.service
 
-sudo chown -R recast:recast /opt/recast/
+# Set ownership (exclude problematic cache/fuse directories)
+find /opt/recast -path "/opt/recast/.cache" -prune -o -print0 | xargs -0 sudo chown recast:recast 2>/dev/null || true
 
 sudo ln -sf /opt/recast/recast-recorder.service /etc/systemd/system/recast-recorder.service
 sudo systemctl daemon-reload
