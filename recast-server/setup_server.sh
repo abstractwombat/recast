@@ -24,7 +24,7 @@ if [ "$EUID" -eq 0 ]; then
         echo "User $NEW_USER created with sudo privileges"
         echo "Please run this script again as that user:"
         echo "  su - $NEW_USER"
-        echo "  ./setup_manager.sh"
+        echo "  ./setup_server.sh"
         exit 0
     else
         echo "Continuing as root (not recommended)..."
