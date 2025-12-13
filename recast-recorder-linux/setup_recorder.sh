@@ -4,6 +4,9 @@
 
 set -e  # Exit on error
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo "=========================================="
 echo "Recast Linux Recorder Setup"
 echo "=========================================="
@@ -78,14 +81,10 @@ cd /opt/recast || { echo "Failed to enter /opt/recast"; exit 1; }
 echo ""
 echo "Step 4: Installing Python dependencies..."
 sudo -u recast python3 -m venv venv
-sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && if [ -f /opt/recast/requirements.txt ]; then pip install -r /opt/recast/requirements.txt; else pip install Flask requests selenium pyautogui pyvirtualdisplay Pillow; fi"
+sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && pip install -r $SCRIPT_DIR/requirements.txt"
 
 echo ""
-echo "Step 5: Skipping static PulseAudio null sink setup (recorder creates virtsink dynamically)"
-
-echo ""
-echo ""
-echo "Step 6: Configuring firewall..."
+echo "Step 5: Configuring firewall..."
 if command -v ufw >/dev/null 2>&1; then
     sudo ufw allow 5001/tcp comment "Recast Recorder HLS Stream"
     sudo ufw allow 5900:5999/tcp comment "Recast Recorder VNC Ports"
@@ -94,15 +93,15 @@ else
 fi
 
 echo ""
-echo "Step 7: Adding manager to /etc/hosts..."
+echo "Step 6: Adding manager to /etc/hosts..."
 if ! grep -q "$MANAGER_HOSTNAME" /etc/hosts; then
     echo "$MANAGER_IP $MANAGER_HOSTNAME" | sudo tee -a /etc/hosts
 fi
 
 echo ""
-echo "Step 8: Creating configuration file..."
+echo "Step 7: Creating configuration file..."
 CONFIG_FILE="/opt/recast/config.toml"
-EXAMPLE_FILE="/opt/recast/config.toml.example"
+EXAMPLE_FILE="$SCRIPT_DIR/config.toml.example"
 
 if [ -f "$CONFIG_FILE" ]; then
     echo "config.toml exists, updating values..."
@@ -161,7 +160,14 @@ fi
 sudo chown recast:recast "$CONFIG_FILE"
 
 echo ""
-echo "Step 9: Installing systemd service..."
+echo "Step 8: Installing project files and systemd service..."
+sudo cp "$SCRIPT_DIR"/*.py /opt/recast/
+sudo cp -r "$SCRIPT_DIR/browser_controllers" /opt/recast/
+sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/
+sudo cp "$SCRIPT_DIR/recast-recorder.service" /opt/recast/recast-recorder.service
+
+sudo chown -R recast:recast /opt/recast/
+
 sudo ln -sf /opt/recast/recast-recorder.service /etc/systemd/system/recast-recorder.service
 sudo systemctl daemon-reload
 sudo systemctl enable recast-recorder
@@ -172,17 +178,14 @@ echo "Setup Complete!"
 echo "=========================================="
 echo ""
 echo "Next steps:"
-echo "1. Copy project files to /opt/recast/"
-echo "   - recast_recorder.py"
-echo "   - browser_controllers/"
 echo ""
-echo "2. Start the service:"
+echo "1. Start the service:"
 echo "   sudo systemctl start recast-recorder"
 echo ""
-echo "3. Check status:"
+echo "2. Check status:"
 echo "   sudo systemctl status recast-recorder"
 echo ""
-echo "4. View logs:"
+echo "3. View logs:"
 echo "   sudo journalctl -u recast-recorder -f"
 echo ""
 

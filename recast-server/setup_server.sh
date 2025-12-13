@@ -86,8 +86,13 @@ fi
 
 echo ""
 echo "Step 8: Installing systemd service..."
+
+sudo cp "$SCRIPT_DIR"/*.py /opt/recast/
+sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/
 sudo cp "$SCRIPT_DIR/recast-server.service" /opt/recast/recast-server.service
-sudo chown recast:recast /opt/recast/recast-server.service
+
+sudo chown -R recast:recast /opt/recast/
+
 sudo ln -sf /opt/recast/recast-server.service /etc/systemd/system/recast-server.service
 sudo systemctl daemon-reload
 sudo systemctl enable recast-server
@@ -98,19 +103,16 @@ echo "Setup Complete!"
 echo "=========================================="
 echo ""
 echo "Next steps:"
-echo "1. Copy project files to /opt/recast/"
-echo "   - recast_server.py"
-echo "   - templates/"
 echo ""
-echo "2. Start the service:"
+echo "1. Start the service:"
 echo "   sudo systemctl start recast-server"
 echo ""
-echo "3. Check status:"
+echo "2. Check status:"
 echo "   sudo systemctl status recast-server"
 echo ""
-echo "4. Access web interface:"
+echo "3. Access web interface:"
 echo "   http://$(hostname):5000"
 echo ""
-echo "5. View logs:"
+echo "4. View logs:"
 echo "   sudo journalctl -u recast-server -f"
 echo ""
