@@ -966,27 +966,49 @@ def browser_session_status():
         except Exception:
             pass
     
-    # Browser is running if controller process is running
-    controller_running = False
+    # Browser is running if controller process OR manual browser process is running
+    browser_running = False
     cproc = sess.get('controller_proc')
+    bproc = sess.get('browser_proc')
     if cproc:
         try:
-            controller_running = cproc.poll() is None
+            browser_running = cproc.poll() is None
+        except Exception:
+            pass
+    if not browser_running and bproc:
+        try:
+            browser_running = bproc.poll() is None
         except Exception:
             pass
     
     return jsonify({
         'exists': True,
-        'browser_running': controller_running,
+        'browser_running': browser_running,
         'vnc_running': vnc_running,
         'vnc_port': sess.get('vnc_port'),
         'display': sess.get('display'),
         'controller': sess.get('controller'),
     })
 
+def _stop_session_browser():
+    """Stop the browser launched by Start VNC (not the controller browser)."""
+    sess = browser_sessions.get(DEFAULT_SESSION_NAME)
+    if not sess:
+        return
+    
+    # Stop the standalone browser process if running
+    bproc = sess.get('browser_proc')
+    if bproc and bproc.poll() is None:
+        try:
+            os.killpg(os.getpgid(bproc.pid), signal.SIGTERM)
+            bproc.wait(timeout=5)
+        except Exception:
+            pass
+    sess['browser_proc'] = None
+
 @stream_app.route('/api/browser_session/start_vnc', methods=['POST'])
 def browser_session_start_vnc():
-    """Start VNC server for the browser session (creates session if needed)."""
+    """Start VNC server and browser for the browser session (creates session if needed)."""
     sess = _get_or_create_session()
     if not sess:
         return jsonify({'status': 'error', 'message': 'Failed to create browser session'}), 500
@@ -1000,10 +1022,85 @@ def browser_session_start_vnc():
         })
     
     display = sess.get('display')
+    
+    # Start VNC first
     vnc_port = find_free_port(5900, 5999)
     vnc_proc = start_vnc_server(display, port=vnc_port)
     sess['vnc_proc'] = vnc_proc
     sess['vnc_port'] = vnc_port
+    
+    # Launch a simple browser for manual setup
+    try:
+        # Ensure Chrome profile directory exists
+        profiles_base = Path(CHROME_PROFILES_BASE_DIR)
+        profiles_base.mkdir(parents=True, exist_ok=True)
+        session_profile = profiles_base / 'default_session'
+        session_profile.mkdir(parents=True, exist_ok=True)
+        default_profile = session_profile / 'Default'
+        default_profile.mkdir(parents=True, exist_ok=True)
+        
+        # Create browser launch script
+        browser_script = f"""
+import os, sys, time
+# Disable MouseInfo before importing pyautogui
+sys.modules['mouseinfo'] = type(sys)('mouseinfo')
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+
+display_env = os.environ.get('DISPLAY')
+user_data_dir = os.environ.get('CHROME_USER_DATA_DIR', '')
+profile_dir = os.environ.get('CHROME_PROFILE_DIR', 'Default')
+
+opts = Options()
+opts.add_argument("--window-size={SCREEN_WIDTH},{SCREEN_HEIGHT}")
+opts.add_argument("--window-position=0,0")
+opts.add_argument("--disable-gpu")
+opts.add_argument("--no-sandbox")
+opts.add_argument("--disable-dev-shm-usage")
+opts.add_argument("--no-default-browser-check")
+opts.add_argument("--no-first-run")
+if display_env:
+    opts.add_argument("--display=" + str(display_env))
+opts.add_argument("--autoplay-policy=no-user-gesture-required")
+if user_data_dir:
+    opts.add_argument("--user-data-dir=" + user_data_dir)
+if profile_dir:
+    opts.add_argument("--profile-directory=" + profile_dir)
+
+print('[browser] Starting Chrome for manual setup...', flush=True)
+driver = webdriver.Chrome(options=opts)
+driver.get('about:blank')
+print('[browser] Chrome ready. Use VNC to interact.', flush=True)
+
+# Keep running until terminated
+while True:
+    time.sleep(1)
+"""
+        wrapper_path = TEMP_DIR / 'browser_manual.py'
+        with open(wrapper_path, 'w') as f:
+            f.write(browser_script)
+        
+        venv_python = BASE_DIR / 'venv' / 'bin' / 'python3'
+        python_executable = str(venv_python) if venv_python.exists() else sys.executable
+        
+        browser_env = os.environ.copy()
+        browser_env['DISPLAY'] = display
+        browser_env['CHROME_USER_DATA_DIR'] = str(session_profile)
+        browser_env['CHROME_PROFILE_DIR'] = 'Default'
+        
+        bproc = subprocess.Popen(
+            [python_executable, str(wrapper_path)],
+            env=browser_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            text=True
+        )
+        sess['browser_proc'] = bproc
+        logger.info(f"Browser launched for manual setup on display {display}")
+    except Exception as e:
+        logger.warning(f"Failed to launch browser: {e}")
     
     ok = vnc_proc is not None and vnc_proc.poll() is None
     logger.info(f"VNC started on port {vnc_port}")
@@ -1055,6 +1152,9 @@ def controller_run():
     cproc = sess.get('controller_proc')
     if cproc and cproc.poll() is None:
         return jsonify({'status': 'error', 'message': f'Controller {sess.get("controller")} already running'}), 400
+    
+    # Stop any existing browser launched by "Start VNC" so controller can launch its own
+    _stop_session_browser()
     
     # Clear stale controller info if process has exited
     if sess.get('controller'):
