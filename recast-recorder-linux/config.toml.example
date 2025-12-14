@@ -32,4 +32,4 @@ channels = 2
 
 [paths]
 output_dir = "/opt/recast/recordings"
-chrome_profiles_dir = "/home/recast/.recast-chrome"
+chrome_profiles_dir = "/opt/recast/.recast-chrome"
