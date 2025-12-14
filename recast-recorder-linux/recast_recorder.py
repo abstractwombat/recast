@@ -1037,6 +1037,9 @@ def browser_session_start_vnc():
         # Ensure temp directory exists
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
         
+        # Set HOME to a writable directory to avoid permission issues with subprocess
+        os.environ['HOME'] = str(TEMP_DIR)
+        
         # Ensure Chrome profile directory exists
         profiles_base = Path(CHROME_PROFILES_BASE_DIR)
         profiles_base.mkdir(parents=True, exist_ok=True)
@@ -1103,9 +1106,12 @@ except Exception as e:
         browser_env['DISPLAY'] = display
         browser_env['CHROME_USER_DATA_DIR'] = str(session_profile)
         browser_env['CHROME_PROFILE_DIR'] = 'Default'
+        # Set HOME to a writable directory to avoid permission issues
+        browser_env['HOME'] = str(TEMP_DIR)
         
         # Log to file for debugging
         log_path = TEMP_DIR / 'browser_manual.log'
+        logger.info(f"Opening log file: {log_path}")
         log_fp = open(log_path, 'w', buffering=1, encoding='utf-8')
         
         bproc = subprocess.Popen(
