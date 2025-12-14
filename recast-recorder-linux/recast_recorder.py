@@ -367,9 +367,9 @@ def test_recording_start():
         HLS_DIR.mkdir(exist_ok=True)
         
         # Start FFmpeg recording
-        result = start_ffmpeg_recording(display)
-        if not result:
-            return jsonify({'status': 'error', 'message': 'Failed to start FFmpeg recording'}), 500
+        success, error_msg = start_ffmpeg_recording(display)
+        if not success:
+            return jsonify({'status': 'error', 'message': error_msg or 'Failed to start FFmpeg recording'}), 500
         
         test_recording_active = True
         test_recording_controller = session_name
@@ -1770,52 +1770,43 @@ def get_audio_source():
         return AUDIO_SOURCE_NAME
 
 def _check_hw_accel_available(hw_type):
-    """Check if hardware acceleration is available."""
+    """Check if hardware acceleration is available. Returns (available, error_message)."""
     try:
         if hw_type == 'nvenc':
-            # Check if NVIDIA driver and CUDA are available
             result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
             if result.returncode != 0:
-                logger.warning("NVENC requested but nvidia-smi failed - NVIDIA driver not available")
-                return False
-            # Also check if ffmpeg has nvenc support
+                return False, "NVENC requires NVIDIA driver (nvidia-smi not found)"
             result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, timeout=10)
             if 'h264_nvenc' not in result.stdout:
-                logger.warning("NVENC requested but ffmpeg doesn't have h264_nvenc encoder")
-                return False
-            return True
+                return False, "FFmpeg doesn't have h264_nvenc encoder"
+            return True, None
         elif hw_type == 'vaapi':
-            # Check if VAAPI device exists
             if not Path('/dev/dri/renderD128').exists():
-                logger.warning("VAAPI requested but /dev/dri/renderD128 not found")
-                return False
-            result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, timeout=10)
-            if 'h264_vaapi' not in result.stdout:
-                logger.warning("VAAPI requested but ffmpeg doesn't have h264_vaapi encoder")
-                return False
-            return True
+                return False, "VAAPI device /dev/dri/renderD128 not found"
+            # Test if VAAPI actually works
+            test = subprocess.run(['ffmpeg', '-hide_banner', '-vaapi_device', '/dev/dri/renderD128', '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1', '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-f', 'null', '-'], capture_output=True, text=True, timeout=10)
+            if test.returncode != 0:
+                return False, f"VAAPI test failed: {test.stderr[-200:] if test.stderr else 'unknown error'}"
+            return True, None
         elif hw_type == 'qsv':
-            # Check for Intel QSV
             result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, timeout=10)
             if 'h264_qsv' not in result.stdout:
-                logger.warning("QSV requested but ffmpeg doesn't have h264_qsv encoder")
-                return False
-            return True
+                return False, "FFmpeg doesn't have h264_qsv encoder"
+            return True, None
         else:
-            return True  # 'none' or unknown - use software
+            return True, None
     except Exception as e:
-        logger.warning(f"Failed to check hardware acceleration availability: {e}")
-        return False
+        return False, str(e)
 
 def _get_video_encoder_opts():
-    """Build video encoder options based on hardware acceleration setting."""
-    global VIDEO_HW_ACCEL
-    
+    """Build video encoder options based on hardware acceleration setting.
+    Returns (opts_list, error_message). If error_message is not None, recording should fail.
+    """
     # Check if requested hardware acceleration is available
     if VIDEO_HW_ACCEL in ('nvenc', 'vaapi', 'qsv'):
-        if not _check_hw_accel_available(VIDEO_HW_ACCEL):
-            logger.warning(f"Hardware acceleration '{VIDEO_HW_ACCEL}' not available, falling back to software encoding")
-            VIDEO_HW_ACCEL = 'none'
+        available, error_msg = _check_hw_accel_available(VIDEO_HW_ACCEL)
+        if not available:
+            return None, f"Hardware acceleration '{VIDEO_HW_ACCEL}' not available: {error_msg}"
     
     if VIDEO_HW_ACCEL == 'vaapi':
         return [
@@ -1826,7 +1817,7 @@ def _get_video_encoder_opts():
             '-g', str(FRAMERATE * GOP_MULT),
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
-        ]
+        ], None
     elif VIDEO_HW_ACCEL == 'nvenc':
         return [
             '-c:v', 'h264_nvenc',
@@ -1837,7 +1828,7 @@ def _get_video_encoder_opts():
             '-g', str(FRAMERATE * GOP_MULT),
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
-        ]
+        ], None
     elif VIDEO_HW_ACCEL == 'qsv':
         return [
             '-c:v', 'h264_qsv',
@@ -1847,7 +1838,7 @@ def _get_video_encoder_opts():
             '-g', str(FRAMERATE * GOP_MULT),
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
-        ]
+        ], None
     else:
         # Software encoding (libx264)
         return [
@@ -1860,16 +1851,24 @@ def _get_video_encoder_opts():
             '-threads', VIDEO_THREADS,
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
-        ]
+        ], None
 
 def start_ffmpeg_recording(display):
-    """Start FFmpeg HLS recording."""
+    """Start FFmpeg HLS recording.
+    Returns (success, error_message). If success is False, error_message explains why.
+    """
     global ffmpeg_process, parec_process
     
     HLS_DIR.mkdir(exist_ok=True)
     
     # Create FFmpeg log file
     ffmpeg_log = TEMP_DIR / 'ffmpeg.log'
+    
+    # Check video encoder options first
+    video_enc_opts, enc_error = _get_video_encoder_opts()
+    if enc_error:
+        logger.error(f"Video encoder error: {enc_error}")
+        return False, enc_error
     
     # Get the audio source dynamically
     audio_source = get_audio_source()
@@ -1904,7 +1903,6 @@ def start_ffmpeg_recording(display):
         ]
 
     # --- ENCODING AND OUTPUT ---
-    video_enc_opts = _get_video_encoder_opts()
     command += ['-vsync', '2'] + video_enc_opts + [
         '-c:a', 'aac',
         '-ar', AUDIO_SAMPLE_RATE,
@@ -1958,7 +1956,7 @@ def start_ffmpeg_recording(display):
                         '-i', display,
                         '-f', 'pulse', '-thread_queue_size', '4096', '-i', 'default',
                         '-vsync', '2',
-                    ] + _get_video_encoder_opts() + [
+                    ] + video_enc_opts + [
                         '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                         '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                     ]
@@ -1971,7 +1969,7 @@ def start_ffmpeg_recording(display):
                         )
                     time.sleep(2)
                     if ffmpeg_process.poll() is None:
-                        return ffmpeg_process
+                        return True, None
 
                 # Next, try PipeWire/Pulse capture via parec -> FIFO -> ffmpeg raw audio
                 try:
@@ -1996,7 +1994,7 @@ def start_ffmpeg_recording(display):
                             '-i', display,
                             '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(AUDIO_FIFO),
                             '-vsync', '2',
-                        ] + _get_video_encoder_opts() + [
+                        ] + video_enc_opts + [
                             '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                             '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                         ]
@@ -2031,7 +2029,7 @@ def start_ffmpeg_recording(display):
                         time.sleep(2)
                         if ffmpeg_process.poll() is None:
                             logger.info("FFmpeg running with parec audio pipeline")
-                            return ffmpeg_process
+                            return True, None
                         else:
                             logger.error("FFmpeg still failed with parec pipeline")
                             try:
@@ -2054,7 +2052,7 @@ def start_ffmpeg_recording(display):
                     '-i', display,
                     '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
                     '-vsync', '2',
-                ] + _get_video_encoder_opts() + [
+                ] + video_enc_opts + [
                     '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                     '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                 ]
@@ -2071,15 +2069,16 @@ def start_ffmpeg_recording(display):
                     logger.error(f"FFmpeg fallback exited immediately with code: {ffmpeg_process.poll()}")
                     if ffmpeg_log.exists():
                         with open(ffmpeg_log, 'r') as f:
-                            logger.error(f"FFmpeg output (fallback):\n{f.read()}")
-                    return None
+                            log_content = f.read()
+                            logger.error(f"FFmpeg output (fallback):\n{log_content}")
+                    return False, "FFmpeg failed to start (all audio fallbacks exhausted)"
             else:
-                return None
+                return False, "FFmpeg failed to start (no audio source available)"
 
-        return ffmpeg_process
+        return True, None
     except Exception as e:
         logger.error(f"Failed to start FFmpeg: {e}")
-        return None
+        return False, str(e)
 
 def _get_playlist_total_ms(playlist_path):
     """Best-effort parse of HLS playlist duration in milliseconds.
@@ -2396,8 +2395,9 @@ def execute_recording_job(job):
         logger.info("Browser ready, starting FFmpeg")
         
         # Start FFmpeg
-        if not start_ffmpeg_recording(display_name):
-            raise Exception("Failed to start FFmpeg")
+        ffmpeg_success, ffmpeg_error = start_ffmpeg_recording(display_name)
+        if not ffmpeg_success:
+            raise Exception(ffmpeg_error or "Failed to start FFmpeg")
         # Determine actual start time as when the first HLS segment appears
         actual_start_time = None
         try:
