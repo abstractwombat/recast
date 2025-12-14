@@ -1071,11 +1071,12 @@ def controller_run():
     display_name = sess.get('display')
     
     try:
-        # Create automated controller script
+        # Create automated controller script with better error handling
         wrapper_script = f"""
-import os, sys, logging
+import os, sys, logging, traceback
 print('[controller] automated controller starting', flush=True)
 print('[controller] DISPLAY=' + str(os.environ.get('DISPLAY')), flush=True)
+print('[controller] CHROME_USER_DATA_DIR=' + str(os.environ.get('CHROME_USER_DATA_DIR')), flush=True)
 
 root = logging.getLogger()
 root.setLevel(logging.DEBUG)
@@ -1084,15 +1085,19 @@ _h.setLevel(logging.DEBUG)
 root.addHandler(_h)
 sys.path.insert(0, '{BROWSER_CONTROLLERS_DIR}')
 
-import {controller}
-
-print('[controller] invoking controller.run_browser_session target_url=' + {url!r}, flush=True)
-{controller}.run_browser_session(
-    target_url={url!r},
-    screen_width={SCREEN_WIDTH},
-    screen_height={SCREEN_HEIGHT},
-    ready_flag_path='{(TEMP_DIR / (controller + '_controller_ready.flag'))}'
-)
+try:
+    import {controller}
+    print('[controller] invoking controller.run_browser_session target_url=' + {url!r}, flush=True)
+    {controller}.run_browser_session(
+        target_url={url!r},
+        screen_width={SCREEN_WIDTH},
+        screen_height={SCREEN_HEIGHT},
+        ready_flag_path='{(TEMP_DIR / (controller + '_controller_ready.flag'))}'
+    )
+except Exception as e:
+    print('[controller] ERROR: ' + str(e), flush=True)
+    traceback.print_exc()
+    sys.exit(1)
 """
         wrapper_path = TEMP_DIR / f'controller_{controller}.py'
         with open(wrapper_path, 'w') as f:
@@ -1166,16 +1171,20 @@ print('[controller] invoking controller.run_browser_session target_url=' + {url!
         threading.Thread(target=_tee_stream, args=(cproc, log_fp), daemon=True).start()
         
         # Give the controller a moment to start and check if it crashed immediately
-        time.sleep(2)
+        time.sleep(3)
         if cproc.poll() is not None:
             # Process exited immediately - read any error output
             try:
                 with open(log_path, 'r') as f:
-                    error_output = f.read()[-500:]  # Last 500 chars
-                logger.error(f"Controller crashed immediately: {error_output}")
-                return jsonify({'status': 'error', 'message': f'Controller crashed: {error_output}'}), 500
-            except Exception:
-                return jsonify({'status': 'error', 'message': 'Controller crashed immediately'}), 500
+                    error_output = f.read()[-2000:]  # Last 2000 chars for more context
+                # Filter out Chrome crash stack traces, keep Python errors
+                lines = error_output.split('\n')
+                filtered = [l for l in lines if not l.strip().startswith('#') and '<unknown>' not in l]
+                error_msg = '\n'.join(filtered[-30:])  # Last 30 meaningful lines
+                logger.error(f"Controller crashed: {error_msg}")
+                return jsonify({'status': 'error', 'message': f'Controller crashed: {error_msg}'}), 500
+            except Exception as read_err:
+                return jsonify({'status': 'error', 'message': f'Controller crashed immediately: {read_err}'}), 500
         
         # Update session with controller info
         sess['controller'] = controller
