@@ -76,6 +76,7 @@ def _apply_defaults(config: dict) -> dict:
             "profile": "baseline",
             "gop_multiplier": 2,
             "hls_time": 5,
+            "hw_accel": "none",  # Options: none, vaapi, nvenc, qsv
         },
         "audio": {
             "bitrate_kbps": 192,

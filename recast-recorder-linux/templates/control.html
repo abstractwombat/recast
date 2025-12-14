@@ -161,6 +161,15 @@
             <label for="hls_time">HLS Segment (sec)</label>
             <input type="number" id="hls_time" min="1" max="30" step="1" />
           </div>
+          <div class="field">
+            <label for="hw_accel">Hardware Acceleration</label>
+            <select id="hw_accel">
+              <option value="none">None (Software)</option>
+              <option value="vaapi">VAAPI (AMD/Intel)</option>
+              <option value="nvenc">NVENC (NVIDIA)</option>
+              <option value="qsv">QSV (Intel Quick Sync)</option>
+            </select>
+          </div>
         </div>
 
         <!-- Audio Section -->
@@ -394,6 +403,7 @@
         document.getElementById('profile').value = data.video.profile || 'baseline';
         document.getElementById('gop_multiplier').value = data.video.gop_multiplier || 2;
         document.getElementById('hls_time').value = data.video.hls_time || 5;
+        document.getElementById('hw_accel').value = data.video.hw_accel || 'none';
         
         // Audio fields
         document.getElementById('bitrate_kbps').value = data.audio.bitrate_kbps || 192;
@@ -431,6 +441,7 @@
           profile: document.getElementById('profile').value,
           gop_multiplier: parseInt(document.getElementById('gop_multiplier').value, 10),
           hls_time: parseInt(document.getElementById('hls_time').value, 10),
+          hw_accel: document.getElementById('hw_accel').value,
         },
         audio: {
           bitrate_kbps: parseInt(document.getElementById('bitrate_kbps').value, 10),

@@ -44,6 +44,7 @@ VIDEO_PIX_FMT = config.video["pix_fmt"]
 VIDEO_PROFILE = config.video["profile"]
 GOP_MULT = config.video["gop_multiplier"]
 HLS_TIME = str(config.video["hls_time"])
+VIDEO_HW_ACCEL = config.video.get("hw_accel", "none")
 
 # Audio encoding settings
 AUDIO_BITRATE_K = str(config.audio["bitrate_kbps"])
@@ -222,6 +223,7 @@ def update_config():
     global SCREEN_WIDTH, SCREEN_HEIGHT, FRAMERATE, AUDIO_SOURCE_NAME
     global VIDEO_PRESET, VIDEO_CRF, VIDEO_MAXRATE_K, VIDEO_BUFSIZE_K
     global VIDEO_THREADS, VIDEO_PIX_FMT, VIDEO_PROFILE, GOP_MULT, HLS_TIME
+    global VIDEO_HW_ACCEL
     global AUDIO_BITRATE_K, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
     
     try:
@@ -242,7 +244,7 @@ def update_config():
         if 'video' in payload:
             vid = payload['video']
             for key in ['preset', 'crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 
-                        'pix_fmt', 'profile', 'gop_multiplier', 'hls_time']:
+                        'pix_fmt', 'profile', 'gop_multiplier', 'hls_time', 'hw_accel']:
                 if key in vid:
                     if key in ['crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 'gop_multiplier', 'hls_time']:
                         full_config['video'][key] = int(vid[key])
@@ -277,6 +279,7 @@ def update_config():
         VIDEO_PROFILE = config.video["profile"]
         GOP_MULT = config.video["gop_multiplier"]
         HLS_TIME = str(config.video["hls_time"])
+        VIDEO_HW_ACCEL = config.video.get("hw_accel", "none")
         
         AUDIO_BITRATE_K = str(config.audio["bitrate_kbps"])
         AUDIO_SAMPLE_RATE = str(config.audio["sample_rate"])
@@ -1235,6 +1238,53 @@ def get_audio_source():
         logger.warning(f"Failed to detect audio source: {e}, using configured value")
         return AUDIO_SOURCE_NAME
 
+def _get_video_encoder_opts():
+    """Build video encoder options based on hardware acceleration setting."""
+    if VIDEO_HW_ACCEL == 'vaapi':
+        return [
+            '-vaapi_device', '/dev/dri/renderD128',
+            '-vf', 'format=nv12,hwupload',
+            '-c:v', 'h264_vaapi',
+            '-qp', str(VIDEO_CRF),
+            '-g', str(FRAMERATE * GOP_MULT),
+            '-maxrate', f'{VIDEO_MAXRATE_K}k',
+            '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+        ]
+    elif VIDEO_HW_ACCEL == 'nvenc':
+        return [
+            '-c:v', 'h264_nvenc',
+            '-pix_fmt', VIDEO_PIX_FMT,
+            '-preset', 'p4',
+            '-rc', 'vbr',
+            '-cq', str(VIDEO_CRF),
+            '-g', str(FRAMERATE * GOP_MULT),
+            '-maxrate', f'{VIDEO_MAXRATE_K}k',
+            '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+        ]
+    elif VIDEO_HW_ACCEL == 'qsv':
+        return [
+            '-c:v', 'h264_qsv',
+            '-pix_fmt', VIDEO_PIX_FMT,
+            '-preset', VIDEO_PRESET,
+            '-global_quality', str(VIDEO_CRF),
+            '-g', str(FRAMERATE * GOP_MULT),
+            '-maxrate', f'{VIDEO_MAXRATE_K}k',
+            '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+        ]
+    else:
+        # Software encoding (libx264)
+        return [
+            '-c:v', 'libx264',
+            '-pix_fmt', VIDEO_PIX_FMT,
+            '-profile:v', VIDEO_PROFILE,
+            '-preset', VIDEO_PRESET,
+            '-crf', str(VIDEO_CRF),
+            '-g', str(FRAMERATE * GOP_MULT),
+            '-threads', VIDEO_THREADS,
+            '-maxrate', f'{VIDEO_MAXRATE_K}k',
+            '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+        ]
+
 def start_ffmpeg_recording(display):
     """Start FFmpeg HLS recording."""
     global ffmpeg_process, parec_process
@@ -1277,18 +1327,8 @@ def start_ffmpeg_recording(display):
         ]
 
     # --- ENCODING AND OUTPUT ---
-    command += [
-        '-vsync', '2',
-        '-c:v', 'libx264',
-        '-pix_fmt', VIDEO_PIX_FMT,
-        '-profile:v', VIDEO_PROFILE,
-        '-preset', VIDEO_PRESET,
-        '-crf', str(VIDEO_CRF),
-        '-g', str(FRAMERATE * GOP_MULT),
-        '-threads', VIDEO_THREADS,
-        '-maxrate', f'{VIDEO_MAXRATE_K}k',
-        '-bufsize', f'{VIDEO_BUFSIZE_K}k',
-
+    video_enc_opts = _get_video_encoder_opts()
+    command += ['-vsync', '2'] + video_enc_opts + [
         '-c:a', 'aac',
         '-ar', AUDIO_SAMPLE_RATE,
         '-b:a', f'{AUDIO_BITRATE_K}k',
@@ -1341,7 +1381,7 @@ def start_ffmpeg_recording(display):
                         '-i', display,
                         '-f', 'pulse', '-thread_queue_size', '4096', '-i', 'default',
                         '-vsync', '2',
-                        '-c:v', 'libx264', '-pix_fmt', VIDEO_PIX_FMT, '-profile:v', VIDEO_PROFILE, '-preset', VIDEO_PRESET, '-crf', str(VIDEO_CRF), '-g', str(FRAMERATE * GOP_MULT), '-threads', VIDEO_THREADS, '-maxrate', f'{VIDEO_MAXRATE_K}k', '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+                    ] + _get_video_encoder_opts() + [
                         '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                         '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                     ]
@@ -1379,7 +1419,7 @@ def start_ffmpeg_recording(display):
                             '-i', display,
                             '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(AUDIO_FIFO),
                             '-vsync', '2',
-                            '-c:v', 'libx264', '-pix_fmt', VIDEO_PIX_FMT, '-profile:v', VIDEO_PROFILE, '-preset', VIDEO_PRESET, '-crf', str(VIDEO_CRF), '-g', str(FRAMERATE * GOP_MULT), '-threads', VIDEO_THREADS, '-maxrate', f'{VIDEO_MAXRATE_K}k', '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+                        ] + _get_video_encoder_opts() + [
                             '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                             '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                         ]
@@ -1437,7 +1477,7 @@ def start_ffmpeg_recording(display):
                     '-i', display,
                     '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
                     '-vsync', '2',
-                    '-c:v', 'libx264', '-pix_fmt', VIDEO_PIX_FMT, '-profile:v', VIDEO_PROFILE, '-preset', VIDEO_PRESET, '-crf', str(VIDEO_CRF), '-g', str(FRAMERATE * GOP_MULT), '-threads', VIDEO_THREADS, '-maxrate', f'{VIDEO_MAXRATE_K}k', '-bufsize', f'{VIDEO_BUFSIZE_K}k',
+                ] + _get_video_encoder_opts() + [
                     '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                     '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                 ]
