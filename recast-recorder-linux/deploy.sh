@@ -31,3 +31,7 @@ find "$DEST_DIR" -path "$DEST_DIR/.cache" -prune -o -print0 | xargs -0 chown rec
 
 echo "Deployment complete. Files copied to $DEST_DIR"
 ls -la "$DEST_DIR"
+
+echo "Restarting service..."
+systemctl restart recast-recorder.service
+systemctl daemon-reload
