@@ -1251,6 +1251,14 @@ except Exception as e:
         ctrl_env = os.environ.copy()
         ctrl_env['DISPLAY'] = display_name
         ctrl_env['KEEP_OPEN_ON_ERROR'] = '1'
+        
+        # Ensure .Xauthority file exists for pyautogui/Xlib
+        xauth_file = TEMP_DIR / '.Xauthority'
+        if not xauth_file.exists():
+            xauth_file.touch(mode=0o600)
+        ctrl_env['XAUTHORITY'] = str(xauth_file)
+        ctrl_env['HOME'] = str(TEMP_DIR)  # Xlib looks for ~/.Xauthority
+        
         error_flag_path = str(TEMP_DIR / f'{controller}_error.flag')
         try:
             efp = Path(error_flag_path)
