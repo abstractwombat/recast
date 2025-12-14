@@ -94,6 +94,7 @@ flask_thread = None
 running = True
 controller_vnc = {}
 controller_sessions = {}
+browser_sessions = {}  # Named browser sessions independent of controllers
 
 # Flask app for serving live HLS stream
 stream_app = Flask(__name__)
@@ -341,15 +342,17 @@ def test_recording_start():
         return jsonify({'status': 'error', 'message': 'A real recording job is in progress'}), 400
     
     payload = request.get_json(silent=True) or {}
-    controller = payload.get('controller')
+    session_name = payload.get('controller')  # UI sends session name as 'controller' for compatibility
     
-    if not controller:
-        return jsonify({'status': 'error', 'message': 'controller required'}), 400
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session required'}), 400
     
-    # Check if session exists for this controller
-    sess = controller_sessions.get(controller)
+    # Check browser_sessions first (new API), then fall back to controller_sessions (legacy)
+    sess = browser_sessions.get(session_name)
     if not sess or not sess.get('display'):
-        return jsonify({'status': 'error', 'message': f'No active session for controller {controller}. Launch a session first.'}), 400
+        sess = controller_sessions.get(session_name)
+    if not sess or not sess.get('display'):
+        return jsonify({'status': 'error', 'message': f'No active session "{session_name}". Create a browser session first.'}), 400
     
     display = sess.get('display')
     
@@ -859,6 +862,492 @@ def session_stop():
         pass
     controller_sessions.pop(controller, None)
     return jsonify({'status': 'success'})
+
+# ============================================================================
+# Browser Sessions API - Named sessions independent of controllers
+# ============================================================================
+
+@stream_app.route('/api/browser_sessions/list')
+def browser_sessions_list():
+    """List all browser sessions with their status."""
+    sessions = {}
+    for name, sess in browser_sessions.items():
+        vnc_running = False
+        vnc_proc = sess.get('vnc_proc')
+        if vnc_proc:
+            try:
+                vnc_running = vnc_proc.poll() is None
+            except Exception:
+                pass
+        browser_running = False
+        browser_proc = sess.get('browser_proc')
+        if browser_proc:
+            try:
+                browser_running = browser_proc.poll() is None
+            except Exception:
+                pass
+        sessions[name] = {
+            'display': sess.get('display'),
+            'vnc_running': vnc_running,
+            'vnc_port': sess.get('vnc_port'),
+            'browser_running': browser_running,
+            'controller': sess.get('controller'),  # If a controller is using this session
+        }
+    return jsonify({'sessions': sessions})
+
+@stream_app.route('/api/browser_sessions/create', methods=['POST'])
+def browser_sessions_create():
+    """Create a new named browser session with Xvfb and Chrome."""
+    payload = request.get_json(silent=True) or {}
+    session_name = payload.get('name')
+    url = payload.get('url') or 'https://www.google.com/'
+    
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session name required'}), 400
+    
+    # Normalize URL
+    try:
+        if url and not (url.startswith('http://') or url.startswith('https://')):
+            url = 'https://' + url
+    except Exception:
+        pass
+    
+    if session_name in browser_sessions:
+        sess = browser_sessions[session_name]
+        # Check if session is still alive
+        browser_proc = sess.get('browser_proc')
+        if browser_proc and browser_proc.poll() is None:
+            return jsonify({
+                'status': 'success',
+                'message': 'session already exists',
+                'display': sess.get('display'),
+                'vnc_port': sess.get('vnc_port')
+            })
+        # Session died, clean it up
+        _cleanup_browser_session(session_name)
+    
+    try:
+        from pyvirtualdisplay import Display
+        display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
+        display.start()
+        display_name = f":{display.display}"
+        os.environ['DISPLAY'] = display_name
+        
+        # Create manual browser session script
+        wrapper_script = f"""
+import os, sys, time, logging
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+try:
+    from selenium.webdriver.chrome.service import Service as ChromeService
+except Exception:
+    ChromeService = None
+
+display_env = os.environ.get('DISPLAY')
+user_data_dir = os.environ.get('CHROME_USER_DATA_DIR') or ''
+profile_dir = os.environ.get('CHROME_PROFILE_DIR') or 'Default'
+
+opts = Options()
+opts.add_argument(f"--window-size={SCREEN_WIDTH},{SCREEN_HEIGHT}")
+opts.add_argument("--window-position=0,0")
+opts.add_argument("--disable-gpu")
+opts.add_argument("--no-sandbox")
+opts.add_argument("--disable-dev-shm-usage")
+opts.add_argument("--no-default-browser-check")
+opts.add_argument("--no-first-run")
+if display_env:
+    opts.add_argument("--display=" + str(display_env))
+opts.add_argument("--autoplay-policy=no-user-gesture-required")
+if user_data_dir:
+    opts.add_argument("--user-data-dir=" + user_data_dir)
+if profile_dir:
+    opts.add_argument("--profile-directory=" + profile_dir)
+
+print('[session] browser starting for session {session_name}', flush=True)
+print('[session] DISPLAY=' + str(display_env), flush=True)
+
+if ChromeService is not None:
+    svc = ChromeService()
+    driver = webdriver.Chrome(options=opts, service=svc)
+else:
+    driver = webdriver.Chrome(options=opts)
+driver.get({url!r})
+
+# Touch ready flag
+try:
+    with open({str(TEMP_DIR / f'session_{session_name}_ready.flag')!r}, 'w') as f:
+        f.write('READY')
+except Exception:
+    pass
+
+while True:
+    time.sleep(1)
+"""
+        wrapper_path = TEMP_DIR / f'browser_session_{session_name}.py'
+        with open(wrapper_path, 'w') as f:
+            f.write(wrapper_script)
+        
+        # Python executable
+        venv_python = BASE_DIR / 'venv' / 'bin' / 'python3'
+        python_executable = str(venv_python) if venv_python.exists() else sys.executable
+        
+        # Environment with session-specific Chrome profile
+        browser_env = os.environ.copy()
+        browser_env['DISPLAY'] = display_name
+        try:
+            profiles_base = Path(CHROME_PROFILES_BASE_DIR)
+            profiles_base.mkdir(parents=True, exist_ok=True)
+            session_profile = profiles_base / f'session_{session_name}'
+            session_profile.mkdir(parents=True, exist_ok=True)
+            browser_env['CHROME_USER_DATA_DIR'] = str(session_profile)
+            browser_env['CHROME_PROFILE_DIR'] = 'Default'
+        except Exception:
+            pass
+        
+        # Launch browser
+        log_path = TEMP_DIR / f'browser_session_{session_name}.log'
+        log_fp = open(log_path, 'a', buffering=1, encoding='utf-8')
+        bproc = subprocess.Popen(
+            [python_executable, str(wrapper_path)],
+            env=browser_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            text=True
+        )
+        
+        def _tee_stream(proc, out_file):
+            try:
+                for line in iter(proc.stdout.readline, ''):
+                    try:
+                        out_file.write(line)
+                    except Exception:
+                        pass
+                    try:
+                        logger.info(line.rstrip())
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    out_file.close()
+                except Exception:
+                    pass
+        
+        threading.Thread(target=_tee_stream, args=(bproc, log_fp), daemon=True).start()
+        
+        # Give Chrome a moment to start
+        time.sleep(1)
+        
+        browser_sessions[session_name] = {
+            'display': display_name,
+            'display_obj': display,
+            'browser_proc': bproc,
+            'vnc_proc': None,
+            'vnc_port': None,
+            'controller': None,
+        }
+        
+        logger.info(f"Browser session '{session_name}' created on display {display_name}")
+        return jsonify({
+            'status': 'success',
+            'display': display_name,
+            'session_name': session_name
+        })
+    except Exception as e:
+        logger.error(f"Failed to create browser session '{session_name}': {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@stream_app.route('/api/browser_sessions/start_vnc', methods=['POST'])
+def browser_sessions_start_vnc():
+    """Start VNC server for a browser session."""
+    payload = request.get_json(silent=True) or {}
+    session_name = payload.get('name')
+    
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session name required'}), 400
+    
+    sess = browser_sessions.get(session_name)
+    if not sess:
+        return jsonify({'status': 'error', 'message': f'session {session_name} not found'}), 404
+    
+    vnc_proc = sess.get('vnc_proc')
+    if vnc_proc and vnc_proc.poll() is None:
+        return jsonify({
+            'status': 'success',
+            'message': 'VNC already running',
+            'port': sess.get('vnc_port')
+        })
+    
+    display = sess.get('display')
+    vnc_port = find_free_port(5900, 5999)
+    vnc_proc = start_vnc_server(display, port=vnc_port)
+    sess['vnc_proc'] = vnc_proc
+    sess['vnc_port'] = vnc_port
+    
+    ok = vnc_proc is not None and vnc_proc.poll() is None
+    logger.info(f"VNC started for session '{session_name}' on port {vnc_port}")
+    return jsonify({
+        'status': 'success' if ok else 'error',
+        'port': vnc_port,
+        'display': display
+    })
+
+@stream_app.route('/api/browser_sessions/stop_vnc', methods=['POST'])
+def browser_sessions_stop_vnc():
+    """Stop VNC server for a browser session."""
+    payload = request.get_json(silent=True) or {}
+    session_name = payload.get('name')
+    
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session name required'}), 400
+    
+    sess = browser_sessions.get(session_name)
+    if not sess:
+        return jsonify({'status': 'success', 'message': 'session not found'})
+    
+    vnc_proc = sess.get('vnc_proc')
+    if vnc_proc and vnc_proc.poll() is None:
+        try:
+            vnc_proc.terminate()
+            vnc_proc.wait(timeout=5)
+        except Exception:
+            pass
+    sess['vnc_proc'] = None
+    sess['vnc_port'] = None
+    
+    logger.info(f"VNC stopped for session '{session_name}'")
+    return jsonify({'status': 'success'})
+
+@stream_app.route('/api/browser_sessions/delete', methods=['POST'])
+def browser_sessions_delete():
+    """Delete a browser session (stops browser and VNC)."""
+    payload = request.get_json(silent=True) or {}
+    session_name = payload.get('name')
+    
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session name required'}), 400
+    
+    _cleanup_browser_session(session_name)
+    return jsonify({'status': 'success'})
+
+def _cleanup_browser_session(session_name):
+    """Clean up a browser session."""
+    sess = browser_sessions.get(session_name)
+    if not sess:
+        return
+    
+    # Stop VNC
+    vnc_proc = sess.get('vnc_proc')
+    if vnc_proc and vnc_proc.poll() is None:
+        try:
+            vnc_proc.terminate()
+            vnc_proc.wait(timeout=5)
+        except Exception:
+            pass
+    
+    # Stop browser
+    bproc = sess.get('browser_proc')
+    if bproc and bproc.poll() is None:
+        try:
+            os.killpg(os.getpgid(bproc.pid), signal.SIGTERM)
+            bproc.wait(timeout=5)
+        except Exception:
+            pass
+    
+    # Stop display
+    try:
+        disp = sess.get('display_obj')
+        if disp:
+            disp.stop()
+    except Exception:
+        pass
+    
+    browser_sessions.pop(session_name, None)
+    logger.info(f"Browser session '{session_name}' cleaned up")
+
+# ============================================================================
+# Browser Controller API - Run automated controller on a session
+# ============================================================================
+
+@stream_app.route('/api/controller/run', methods=['POST'])
+def controller_run():
+    """Run an automated controller on an existing browser session."""
+    payload = request.get_json(silent=True) or {}
+    controller = payload.get('controller')
+    session_name = payload.get('session')
+    url = payload.get('url') or 'https://www.google.com/'
+    keep_open_on_error = bool(payload.get('keep_open_on_error'))
+    
+    if not controller:
+        return jsonify({'status': 'error', 'message': 'controller required'}), 400
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session required'}), 400
+    
+    sess = browser_sessions.get(session_name)
+    if not sess:
+        return jsonify({'status': 'error', 'message': f'session {session_name} not found'}), 404
+    
+    # Check if session already has a controller running
+    if sess.get('controller'):
+        return jsonify({'status': 'error', 'message': f'session already has controller {sess.get("controller")} running'}), 400
+    
+    # Normalize URL
+    try:
+        if url and not (url.startswith('http://') or url.startswith('https://')):
+            url = 'https://' + url
+    except Exception:
+        pass
+    
+    display_name = sess.get('display')
+    
+    try:
+        # Create automated controller script
+        wrapper_script = f"""
+import os, sys, logging
+print('[controller] automated controller starting', flush=True)
+print('[controller] DISPLAY=' + str(os.environ.get('DISPLAY')), flush=True)
+
+root = logging.getLogger()
+root.setLevel(logging.DEBUG)
+_h = logging.StreamHandler(sys.stdout)
+_h.setLevel(logging.DEBUG)
+root.addHandler(_h)
+sys.path.insert(0, '{BROWSER_CONTROLLERS_DIR}')
+
+import {controller}
+
+print('[controller] invoking controller.run_browser_session target_url=' + {url!r}, flush=True)
+{controller}.run_browser_session(
+    target_url={url!r},
+    screen_width={SCREEN_WIDTH},
+    screen_height={SCREEN_HEIGHT},
+    ready_flag_path='{(TEMP_DIR / (controller + '_controller_ready.flag'))}'
+)
+"""
+        wrapper_path = TEMP_DIR / f'controller_{controller}_{session_name}.py'
+        with open(wrapper_path, 'w') as f:
+            f.write(wrapper_script)
+        
+        # Python executable
+        venv_python = BASE_DIR / 'venv' / 'bin' / 'python3'
+        python_executable = str(venv_python) if venv_python.exists() else sys.executable
+        
+        # Environment
+        ctrl_env = os.environ.copy()
+        ctrl_env['DISPLAY'] = display_name
+        ctrl_env['KEEP_OPEN_ON_ERROR'] = '1' if keep_open_on_error else '0'
+        error_flag_path = str(TEMP_DIR / f'{controller}_{session_name}_error.flag')
+        try:
+            efp = Path(error_flag_path)
+            if efp.exists():
+                efp.unlink()
+        except Exception:
+            pass
+        ctrl_env['SESSION_ERROR_FLAG'] = error_flag_path
+        
+        # Use session's Chrome profile
+        try:
+            profiles_base = Path(CHROME_PROFILES_BASE_DIR)
+            session_profile = profiles_base / f'session_{session_name}'
+            ctrl_env['CHROME_USER_DATA_DIR'] = str(session_profile)
+            ctrl_env['CHROME_PROFILE_DIR'] = 'Default'
+        except Exception:
+            pass
+        
+        # Launch controller
+        log_path = TEMP_DIR / f'controller_{controller}_{session_name}.log'
+        log_fp = open(log_path, 'a', buffering=1, encoding='utf-8')
+        cproc = subprocess.Popen(
+            [python_executable, str(wrapper_path)],
+            env=ctrl_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            text=True
+        )
+        
+        def _tee_stream(proc, out_file):
+            try:
+                for line in iter(proc.stdout.readline, ''):
+                    try:
+                        out_file.write(line)
+                    except Exception:
+                        pass
+                    try:
+                        logger.info(line.rstrip())
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    out_file.close()
+                except Exception:
+                    pass
+        
+        threading.Thread(target=_tee_stream, args=(cproc, log_fp), daemon=True).start()
+        
+        # Start VNC if not already running
+        vnc_proc = sess.get('vnc_proc')
+        vnc_port = sess.get('vnc_port')
+        if not vnc_proc or vnc_proc.poll() is not None:
+            vnc_port = find_free_port(5900, 5999)
+            vnc_proc = start_vnc_server(display_name, port=vnc_port)
+            sess['vnc_proc'] = vnc_proc
+            sess['vnc_port'] = vnc_port
+        
+        # Update session with controller info
+        sess['controller'] = controller
+        sess['controller_proc'] = cproc
+        sess['error_flag'] = error_flag_path
+        
+        logger.info(f"Controller '{controller}' started on session '{session_name}', display {display_name}, VNC port {vnc_port}")
+        return jsonify({
+            'status': 'success',
+            'display': display_name,
+            'vnc_port': vnc_port,
+            'controller': controller,
+            'session': session_name
+        })
+    except Exception as e:
+        logger.error(f"Failed to run controller '{controller}' on session '{session_name}': {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@stream_app.route('/api/controller/stop', methods=['POST'])
+def controller_stop():
+    """Stop a running controller on a session."""
+    payload = request.get_json(silent=True) or {}
+    session_name = payload.get('session')
+    
+    if not session_name:
+        return jsonify({'status': 'error', 'message': 'session required'}), 400
+    
+    sess = browser_sessions.get(session_name)
+    if not sess:
+        return jsonify({'status': 'success', 'message': 'session not found'})
+    
+    controller = sess.get('controller')
+    cproc = sess.get('controller_proc')
+    
+    if cproc and cproc.poll() is None:
+        try:
+            os.killpg(os.getpgid(cproc.pid), signal.SIGTERM)
+            cproc.wait(timeout=5)
+        except Exception:
+            pass
+    
+    # Clean up error flag
+    try:
+        ef = sess.get('error_flag')
+        if ef and Path(ef).exists():
+            Path(ef).unlink()
+    except Exception:
+        pass
+    
+    sess['controller'] = None
+    sess['controller_proc'] = None
+    sess['error_flag'] = None
+    
+    logger.info(f"Controller '{controller}' stopped on session '{session_name}'")
+    return jsonify({'status': 'success', 'controller': controller})
 
 @stream_app.route('/recordings/<path:filename>')
 def serve_recording(filename):

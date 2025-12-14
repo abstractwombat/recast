@@ -40,42 +40,62 @@
 </head>
 <body>
   <div class="container">
+    <!-- Browser Sessions Section -->
     <div class="card">
-      <h1>Recorder VNC Control</h1>
-      <p class="muted">Launching a session will automatically start a VNC server; stopping the session will stop it. The Start/Stop VNC buttons are optional for manual control. Connect using your VNC client to <em>host:port</em> or a <code>vnc://</code> link.</p>
+      <h1>Browser Sessions</h1>
+      <p class="muted">Create named browser sessions for manual setup. Each session runs Chrome in a virtual display. Start VNC to connect and configure the browser (login, etc). Sessions can then be used by automated controllers.</p>
+      
       <div class="row" style="margin-top:12px;">
-        <label for="controller">Controller:</label>
-        <select id="controller"></select>
-        <label for="mode">Mode:</label>
-        <select id="mode">
-          <option value="manual" selected>Manual</option>
-          <option value="automated">Automated</option>
-        </select>
-        <input type="text" id="url" placeholder="https://www.google.com/" style="flex:1; min-width:220px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px;" />
+        <label for="sessionName">Session Name:</label>
+        <input type="text" id="sessionName" placeholder="my-session" style="width:150px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px;" />
+        <input type="text" id="sessionUrl" placeholder="https://www.google.com/" style="flex:1; min-width:180px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px;" />
+        <button class="btn" id="btnCreateSession">Create Session</button>
       </div>
+      
       <div class="row" style="margin-top:8px;">
-        <label><input type="checkbox" id="keepOpen" /> Keep open on error</label>
-        <button class="btn" id="btnLaunch">Launch Session</button>
-        <button class="btn stop" id="btnClose">Close Session</button>
-        <button class="btn secondary" id="btnStart">Start VNC</button>
-        <button class="btn secondary" id="btnStop">Stop VNC</button>
-        <button class="btn" id="btnRefresh">Refresh</button>
+        <label for="sessionSelect">Session:</label>
+        <select id="sessionSelect" style="min-width:150px;"></select>
+        <button class="btn secondary" id="btnSessionStartVnc">Start VNC</button>
+        <button class="btn secondary" id="btnSessionStopVnc">Stop VNC</button>
+        <button class="btn stop" id="btnDeleteSession">Delete Session</button>
+        <button class="btn" id="btnRefreshSessions">Refresh</button>
       </div>
-      <div class="status" id="status"></div>
+      
+      <div class="status" id="sessionStatus"></div>
 
-      <table class="table" id="table">
+      <table class="table" id="sessionsTable">
         <thead>
           <tr>
-            <th>Controller</th>
-            <th>Mode</th>
+            <th>Session</th>
+            <th>Browser</th>
             <th>VNC</th>
             <th>Port</th>
-            <th>Error</th>
+            <th>Controller</th>
             <th>Display</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+
+    <!-- Browser Controller Section -->
+    <div class="card" style="margin-top: 24px;">
+      <h1>Browser Controller</h1>
+      <p class="muted">Run an automated browser controller on an existing session. The controller will navigate to the URL and perform automated actions. VNC will be started automatically if not already running.</p>
+      
+      <div class="row" style="margin-top:12px;">
+        <label for="controller">Controller:</label>
+        <select id="controller"></select>
+        <label for="controllerSession">Session:</label>
+        <select id="controllerSession"></select>
+        <input type="text" id="controllerUrl" placeholder="https://www.google.com/" style="flex:1; min-width:180px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px;" />
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <label><input type="checkbox" id="keepOpen" /> Keep open on error</label>
+        <button class="btn" id="btnRunController">Run Controller</button>
+        <button class="btn stop" id="btnStopController">Stop Controller</button>
+      </div>
+      <div class="status" id="controllerStatus"></div>
     </div>
 
     <div class="card" style="margin-top: 24px;">
@@ -205,10 +225,10 @@
 
     <div class="card" style="margin-top: 24px;">
       <h1>Recorder Testing</h1>
-      <p class="muted">Start a test recording using an active session. The live stream will be available at <code>/live</code>. A session must be running first (use "Launch Session" above).</p>
+      <p class="muted">Start a test recording using an active browser session. The live stream will be available at <code>/live</code>. A session with VNC running must exist first (create one in "Browser Sessions" above).</p>
       
       <div class="row" style="margin-top: 12px;">
-        <label for="testController">Controller:</label>
+        <label for="testController">Session:</label>
         <select id="testController"></select>
         <button class="btn" id="btnStartTest">Start Recording</button>
         <button class="btn stop" id="btnStopTest">Stop Recording</button>
@@ -225,7 +245,7 @@
               <td id="testRecordingStatus">-</td>
             </tr>
             <tr>
-              <td><strong>Controller</strong></td>
+              <td><strong>Session</strong></td>
               <td id="testRecordingController">-</td>
             </tr>
             <tr>
@@ -248,136 +268,368 @@
   </div>
 
   <script>
-    async function fetchStatus() {
-      const res = await fetch('/api/vnc/status');
-      if (!res.ok) throw new Error('status failed');
+    // ========================================================================
+    // Browser Sessions Management
+    // ========================================================================
+    
+    async function fetchBrowserSessions() {
+      const res = await fetch('/api/browser_sessions/list');
+      if (!res.ok) throw new Error('Failed to fetch sessions');
       return res.json();
     }
 
-    function populateControllers(data) {
-      const sel = document.getElementById('controller');
-      const tbody = document.querySelector('#table tbody');
-      const prev = sel.value;
-      // Clear existing
-      while (sel.firstChild) sel.removeChild(sel.firstChild);
-      while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-      const controllers = data.controllers || {};
-      const names = Object.keys(controllers).sort();
-      for (const name of names) {
-        const opt = document.createElement('option');
-        opt.value = name; opt.textContent = name;
-        sel.appendChild(opt);
+    async function fetchControllers() {
+      const res = await fetch('/api/vnc/status');
+      if (!res.ok) throw new Error('Failed to fetch controllers');
+      return res.json();
+    }
 
-        const info = controllers[name] || {};
-        const running = !!info.vnc_running;
-        if (running) {
+    function populateSessions(data) {
+      const sessions = data.sessions || {};
+      const names = Object.keys(sessions).sort();
+      
+      // Populate session select dropdown
+      const sessionSelect = document.getElementById('sessionSelect');
+      const controllerSessionSelect = document.getElementById('controllerSession');
+      const testControllerSelect = document.getElementById('testController');
+      const prevSession = sessionSelect.value;
+      const prevControllerSession = controllerSessionSelect.value;
+      
+      // Clear existing options
+      while (sessionSelect.firstChild) sessionSelect.removeChild(sessionSelect.firstChild);
+      while (controllerSessionSelect.firstChild) controllerSessionSelect.removeChild(controllerSessionSelect.firstChild);
+      
+      if (names.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no sessions)';
+        opt.disabled = true;
+        sessionSelect.appendChild(opt);
+        
+        const opt2 = document.createElement('option');
+        opt2.value = '';
+        opt2.textContent = '(no sessions)';
+        opt2.disabled = true;
+        controllerSessionSelect.appendChild(opt2);
+      } else {
+        for (const name of names) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sessionSelect.appendChild(opt);
+          
+          const opt2 = document.createElement('option');
+          opt2.value = name;
+          opt2.textContent = name;
+          controllerSessionSelect.appendChild(opt2);
+        }
+      }
+      
+      if (names.includes(prevSession)) sessionSelect.value = prevSession;
+      if (names.includes(prevControllerSession)) controllerSessionSelect.value = prevControllerSession;
+      
+      // Populate sessions table
+      const tbody = document.querySelector('#sessionsTable tbody');
+      while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+      
+      if (names.length === 0) {
+        const row = document.createElement('tr');
+        row.innerHTML = '<td colspan="6" class="muted">No browser sessions. Create one above.</td>';
+        tbody.appendChild(row);
+      } else {
+        for (const name of names) {
+          const sess = sessions[name];
           const row = document.createElement('tr');
-          const mode = info.mode || 'none';
-          const hasErr = !!info.error;
-          const vncPort = info.vnc_port || '';
+          const browserStatus = sess.browser_running ? '<span class="badge on">RUNNING</span>' : '<span class="badge off">STOPPED</span>';
+          const vncStatus = sess.vnc_running ? '<span class="badge on">RUNNING</span>' : '<span class="badge off">OFF</span>';
+          const vncPort = sess.vnc_port || '-';
+          const controller = sess.controller || '-';
+          const display = sess.display || '-';
           row.innerHTML = `
             <td>${name}</td>
-            <td>${mode}</td>
-            <td><span class="badge on">RUNNING</span></td>
+            <td>${browserStatus}</td>
+            <td>${vncStatus}</td>
             <td>${vncPort}</td>
-            <td>${hasErr ? '<span class="err">ERROR</span>' : ''}</td>
-            <td>${info.display ?? ''}</td>
+            <td>${controller}</td>
+            <td>${display}</td>
           `;
           tbody.appendChild(row);
         }
       }
-      if (names.includes(prev)) sel.value = prev; else if (names.length > 0) sel.value = names[0];
-      // If no running controllers, show an empty hint row
-      if (!tbody.firstChild) {
-        const row = document.createElement('tr');
-        row.innerHTML = `<td colspan="6" class="muted">No controllers are currently running.</td>`;
-        tbody.appendChild(row);
+      
+      // Update session status with VNC connect info
+      const selectedSession = sessionSelect.value;
+      const sessionStatus = document.getElementById('sessionStatus');
+      if (selectedSession && sessions[selectedSession]) {
+        const sess = sessions[selectedSession];
+        if (sess.vnc_running && sess.vnc_port) {
+          const host = window.location.hostname;
+          const port = sess.vnc_port;
+          const url = `vnc://${host}:${port}`;
+          sessionStatus.innerHTML = `Connect with: <strong>${host}:${port}</strong> · <a href="${url}">${url}</a>`;
+        } else {
+          sessionStatus.textContent = '';
+        }
+      } else {
+        sessionStatus.textContent = '';
+      }
+      
+      // Update test controller dropdown to use sessions
+      while (testControllerSelect.firstChild) testControllerSelect.removeChild(testControllerSelect.firstChild);
+      const sessionsWithVnc = names.filter(n => sessions[n].vnc_running);
+      if (sessionsWithVnc.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no active sessions)';
+        opt.disabled = true;
+        testControllerSelect.appendChild(opt);
+      } else {
+        for (const name of sessionsWithVnc) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          testControllerSelect.appendChild(opt);
+        }
+      }
+    }
+
+    function populateControllers(data) {
+      const sel = document.getElementById('controller');
+      const prev = sel.value;
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      
+      const controllers = data.controllers || {};
+      const names = Object.keys(controllers).sort();
+      
+      if (names.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no controllers)';
+        opt.disabled = true;
+        sel.appendChild(opt);
+      } else {
+        for (const name of names) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        }
+      }
+      
+      if (names.includes(prev)) sel.value = prev;
+      else if (names.length > 0) sel.value = names[0];
+    }
+
+    async function refreshSessions() {
+      try {
+        const data = await fetchBrowserSessions();
+        populateSessions(data);
+      } catch (e) {
+        console.error('Failed to refresh sessions', e);
       }
     }
 
     async function refresh() {
       try {
-        const data = await fetchStatus();
-        populateControllers(data);
-        document.getElementById('status').textContent = '';
-        // Toaster for selected controller if there is an error
-        const sel = document.getElementById('controller');
-        const controllers = data.controllers || {};
-        const current = controllers[sel.value];
-        const toast = document.getElementById('toast');
-        const toastMsg = document.getElementById('toastMsg');
-        if (current && current.error) {
-          toastMsg.textContent = current.error_message || 'Automation error occurred; browser left open for inspection.';
-          toast.classList.add('show');
-        } else {
-          toast.classList.remove('show');
-          toastMsg.textContent = '';
-        }
-        // Show connect hint
-        const status = document.getElementById('status');
-        if (current && current.vnc_running) {
-          const host = window.location.hostname;
-          const port = current.vnc_port || 5900;
-          const url = `vnc://${host}:${port}`;
-          status.innerHTML = `Connect with: <strong>${host}:${port}</strong> · <a href="${url}">${url}</a>`;
-        }
+        const [sessionsData, controllersData] = await Promise.all([
+          fetchBrowserSessions(),
+          fetchControllers()
+        ]);
+        populateSessions(sessionsData);
+        populateControllers(controllersData);
+        await refreshTestStatus();
       } catch (e) {
-        document.getElementById('status').textContent = 'Failed to load status';
+        console.error('Failed to refresh', e);
       }
     }
 
-    async function startVNC() {
-      const controller = document.getElementById('controller').value;
-      const res = await fetch('/api/vnc/start', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ controller })
-      });
-      const body = await res.json();
-      document.getElementById('status').textContent = res.ok ? `VNC started (display ${body.display || ''})` : (body.message || 'Failed to start VNC');
-      await refresh();
+    // Session actions
+    async function createSession() {
+      const name = document.getElementById('sessionName').value.trim();
+      const url = document.getElementById('sessionUrl').value || 'https://www.google.com/';
+      
+      if (!name) {
+        document.getElementById('sessionStatus').textContent = 'Please enter a session name';
+        return;
+      }
+      
+      document.getElementById('sessionStatus').textContent = 'Creating session...';
+      try {
+        const res = await fetch('/api/browser_sessions/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, url })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          document.getElementById('sessionStatus').textContent = `Session '${name}' created on ${data.display || ''}`;
+          document.getElementById('sessionName').value = '';
+        } else {
+          document.getElementById('sessionStatus').textContent = 'Error: ' + (data.message || 'Failed to create session');
+        }
+        await refresh();
+      } catch (e) {
+        document.getElementById('sessionStatus').textContent = 'Error: ' + e.message;
+      }
     }
 
-    async function stopVNC() {
-      const controller = document.getElementById('controller').value;
-      const res = await fetch('/api/vnc/stop', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ controller })
-      });
-      const body = await res.json();
-      document.getElementById('status').textContent = res.ok ? 'VNC stopped' : (body.message || 'Failed to stop VNC');
-      await refresh();
+    async function sessionStartVnc() {
+      const name = document.getElementById('sessionSelect').value;
+      if (!name) {
+        document.getElementById('sessionStatus').textContent = 'No session selected';
+        return;
+      }
+      
+      document.getElementById('sessionStatus').textContent = 'Starting VNC...';
+      try {
+        const res = await fetch('/api/browser_sessions/start_vnc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const host = window.location.hostname;
+          const port = data.port;
+          const url = `vnc://${host}:${port}`;
+          document.getElementById('sessionStatus').innerHTML = `VNC started. Connect: <strong>${host}:${port}</strong> · <a href="${url}">${url}</a>`;
+        } else {
+          document.getElementById('sessionStatus').textContent = 'Error: ' + (data.message || 'Failed to start VNC');
+        }
+        await refresh();
+      } catch (e) {
+        document.getElementById('sessionStatus').textContent = 'Error: ' + e.message;
+      }
     }
 
-    async function launchSession() {
+    async function sessionStopVnc() {
+      const name = document.getElementById('sessionSelect').value;
+      if (!name) {
+        document.getElementById('sessionStatus').textContent = 'No session selected';
+        return;
+      }
+      
+      document.getElementById('sessionStatus').textContent = 'Stopping VNC...';
+      try {
+        const res = await fetch('/api/browser_sessions/stop_vnc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+          document.getElementById('sessionStatus').textContent = 'VNC stopped';
+        } else {
+          const data = await res.json();
+          document.getElementById('sessionStatus').textContent = 'Error: ' + (data.message || 'Failed to stop VNC');
+        }
+        await refresh();
+      } catch (e) {
+        document.getElementById('sessionStatus').textContent = 'Error: ' + e.message;
+      }
+    }
+
+    async function deleteSession() {
+      const name = document.getElementById('sessionSelect').value;
+      if (!name) {
+        document.getElementById('sessionStatus').textContent = 'No session selected';
+        return;
+      }
+      
+      if (!confirm(`Delete session '${name}'? This will stop the browser and VNC.`)) return;
+      
+      document.getElementById('sessionStatus').textContent = 'Deleting session...';
+      try {
+        const res = await fetch('/api/browser_sessions/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+          document.getElementById('sessionStatus').textContent = `Session '${name}' deleted`;
+        } else {
+          const data = await res.json();
+          document.getElementById('sessionStatus').textContent = 'Error: ' + (data.message || 'Failed to delete session');
+        }
+        await refresh();
+      } catch (e) {
+        document.getElementById('sessionStatus').textContent = 'Error: ' + e.message;
+      }
+    }
+
+    // Controller actions
+    async function runController() {
       const controller = document.getElementById('controller').value;
-      const mode = document.getElementById('mode').value || 'manual';
+      const session = document.getElementById('controllerSession').value;
+      const url = document.getElementById('controllerUrl').value || 'https://www.google.com/';
       const keep_open_on_error = document.getElementById('keepOpen').checked;
-      const url = document.getElementById('url').value || 'https://www.google.com/';
-      const res = await fetch('/api/session/launch', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ controller, url, mode, keep_open_on_error })
-      });
-      const body = await res.json();
-      document.getElementById('status').textContent = res.ok ? `Session launched on ${body.display || ''}` : (body.message || 'Failed to launch session');
-      await refresh();
+      
+      if (!controller) {
+        document.getElementById('controllerStatus').textContent = 'No controller selected';
+        return;
+      }
+      if (!session) {
+        document.getElementById('controllerStatus').textContent = 'No session selected';
+        return;
+      }
+      
+      document.getElementById('controllerStatus').textContent = 'Starting controller...';
+      try {
+        const res = await fetch('/api/controller/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller, session, url, keep_open_on_error })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const host = window.location.hostname;
+          const port = data.vnc_port;
+          const vncUrl = `vnc://${host}:${port}`;
+          document.getElementById('controllerStatus').innerHTML = `Controller '${controller}' running on session '${session}'. VNC: <strong>${host}:${port}</strong> · <a href="${vncUrl}">${vncUrl}</a>`;
+        } else {
+          document.getElementById('controllerStatus').textContent = 'Error: ' + (data.message || 'Failed to run controller');
+        }
+        await refresh();
+      } catch (e) {
+        document.getElementById('controllerStatus').textContent = 'Error: ' + e.message;
+      }
     }
 
-    async function closeSession() {
-      const controller = document.getElementById('controller').value;
-      const res = await fetch('/api/session/stop', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ controller })
-      });
-      const body = await res.json();
-      document.getElementById('status').textContent = res.ok ? 'Session closed' : (body.message || 'Failed to close session');
-      await refresh();
+    async function stopController() {
+      const session = document.getElementById('controllerSession').value;
+      if (!session) {
+        document.getElementById('controllerStatus').textContent = 'No session selected';
+        return;
+      }
+      
+      document.getElementById('controllerStatus').textContent = 'Stopping controller...';
+      try {
+        const res = await fetch('/api/controller/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          document.getElementById('controllerStatus').textContent = `Controller '${data.controller || ''}' stopped`;
+        } else {
+          document.getElementById('controllerStatus').textContent = 'Error: ' + (data.message || 'Failed to stop controller');
+        }
+        await refresh();
+      } catch (e) {
+        document.getElementById('controllerStatus').textContent = 'Error: ' + e.message;
+      }
     }
 
-    document.getElementById('btnLaunch').addEventListener('click', launchSession);
-    document.getElementById('btnClose').addEventListener('click', closeSession);
-    document.getElementById('btnStart').addEventListener('click', startVNC);
-    document.getElementById('btnStop').addEventListener('click', stopVNC);
-    document.getElementById('btnRefresh').addEventListener('click', refresh);
+    // Event listeners for sessions
+    document.getElementById('btnCreateSession').addEventListener('click', createSession);
+    document.getElementById('btnSessionStartVnc').addEventListener('click', sessionStartVnc);
+    document.getElementById('btnSessionStopVnc').addEventListener('click', sessionStopVnc);
+    document.getElementById('btnDeleteSession').addEventListener('click', deleteSession);
+    document.getElementById('btnRefreshSessions').addEventListener('click', refresh);
+    
+    // Event listeners for controller
+    document.getElementById('btnRunController').addEventListener('click', runController);
+    document.getElementById('btnStopController').addEventListener('click', stopController);
 
     // Config management
     async function loadConfig() {
@@ -471,32 +723,7 @@
     document.getElementById('btnReloadConfig').addEventListener('click', loadConfig);
 
     // Test recording management
-    function populateTestControllers(data) {
-      const sel = document.getElementById('testController');
-      const prev = sel.value;
-      while (sel.firstChild) sel.removeChild(sel.firstChild);
-      const controllers = data.controllers || {};
-      const names = Object.keys(controllers).sort();
-      // Only show controllers with active sessions
-      for (const name of names) {
-        const info = controllers[name] || {};
-        if (info.vnc_running && info.mode === 'session') {
-          const opt = document.createElement('option');
-          opt.value = name;
-          opt.textContent = name;
-          sel.appendChild(opt);
-        }
-      }
-      if (names.includes(prev)) sel.value = prev;
-      // If no sessions, add a placeholder
-      if (!sel.firstChild) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = '(no active sessions)';
-        opt.disabled = true;
-        sel.appendChild(opt);
-      }
-    }
+    // Note: populateTestControllers is now handled by populateSessions()
 
     async function refreshTestStatus() {
       try {
@@ -588,17 +815,7 @@
     document.getElementById('btnStartTest').addEventListener('click', startTestRecording);
     document.getElementById('btnStopTest').addEventListener('click', stopTestRecording);
 
-    // Extend refresh to also update test controller dropdown
-    const originalRefresh = refresh;
-    refresh = async function() {
-      await originalRefresh();
-      try {
-        const data = await fetchStatus();
-        populateTestControllers(data);
-      } catch (e) {}
-      await refreshTestStatus();
-    };
-
+    // Initialize
     refresh();
     loadConfig();
     setInterval(refresh, 5000);
