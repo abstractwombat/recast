@@ -1039,43 +1039,52 @@ def browser_session_start_vnc():
         default_profile = session_profile / 'Default'
         default_profile.mkdir(parents=True, exist_ok=True)
         
-        # Create browser launch script
+        # Create browser launch script with error handling
         browser_script = f"""
-import os, sys, time
-# Disable MouseInfo before importing pyautogui
-sys.modules['mouseinfo'] = type(sys)('mouseinfo')
+import os, sys, time, traceback
+print('[browser] Starting...', flush=True)
+print('[browser] DISPLAY=' + str(os.environ.get('DISPLAY')), flush=True)
+print('[browser] CHROME_USER_DATA_DIR=' + str(os.environ.get('CHROME_USER_DATA_DIR')), flush=True)
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+try:
+    # Disable MouseInfo before importing pyautogui
+    sys.modules['mouseinfo'] = type(sys)('mouseinfo')
 
-display_env = os.environ.get('DISPLAY')
-user_data_dir = os.environ.get('CHROME_USER_DATA_DIR', '')
-profile_dir = os.environ.get('CHROME_PROFILE_DIR', 'Default')
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
 
-opts = Options()
-opts.add_argument("--window-size={SCREEN_WIDTH},{SCREEN_HEIGHT}")
-opts.add_argument("--window-position=0,0")
-opts.add_argument("--disable-gpu")
-opts.add_argument("--no-sandbox")
-opts.add_argument("--disable-dev-shm-usage")
-opts.add_argument("--no-default-browser-check")
-opts.add_argument("--no-first-run")
-if display_env:
-    opts.add_argument("--display=" + str(display_env))
-opts.add_argument("--autoplay-policy=no-user-gesture-required")
-if user_data_dir:
-    opts.add_argument("--user-data-dir=" + user_data_dir)
-if profile_dir:
-    opts.add_argument("--profile-directory=" + profile_dir)
+    display_env = os.environ.get('DISPLAY')
+    user_data_dir = os.environ.get('CHROME_USER_DATA_DIR', '')
+    profile_dir = os.environ.get('CHROME_PROFILE_DIR', 'Default')
 
-print('[browser] Starting Chrome for manual setup...', flush=True)
-driver = webdriver.Chrome(options=opts)
-driver.get('about:blank')
-print('[browser] Chrome ready. Use VNC to interact.', flush=True)
+    opts = Options()
+    opts.add_argument("--window-size={SCREEN_WIDTH},{SCREEN_HEIGHT}")
+    opts.add_argument("--window-position=0,0")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--no-first-run")
+    if display_env:
+        opts.add_argument("--display=" + str(display_env))
+    opts.add_argument("--autoplay-policy=no-user-gesture-required")
+    if user_data_dir:
+        opts.add_argument("--user-data-dir=" + user_data_dir)
+    if profile_dir:
+        opts.add_argument("--profile-directory=" + profile_dir)
 
-# Keep running until terminated
-while True:
-    time.sleep(1)
+    print('[browser] Starting Chrome for manual setup...', flush=True)
+    driver = webdriver.Chrome(options=opts)
+    driver.get('about:blank')
+    print('[browser] Chrome ready. Use VNC to interact.', flush=True)
+
+    # Keep running until terminated
+    while True:
+        time.sleep(1)
+except Exception as e:
+    print('[browser] ERROR: ' + str(e), flush=True)
+    traceback.print_exc()
+    sys.exit(1)
 """
         wrapper_path = TEMP_DIR / 'browser_manual.py'
         with open(wrapper_path, 'w') as f:
@@ -1089,16 +1098,33 @@ while True:
         browser_env['CHROME_USER_DATA_DIR'] = str(session_profile)
         browser_env['CHROME_PROFILE_DIR'] = 'Default'
         
+        # Log to file for debugging
+        log_path = TEMP_DIR / 'browser_manual.log'
+        log_fp = open(log_path, 'w', buffering=1, encoding='utf-8')
+        
         bproc = subprocess.Popen(
             [python_executable, str(wrapper_path)],
             env=browser_env,
-            stdout=subprocess.PIPE,
+            stdout=log_fp,
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
             text=True
         )
         sess['browser_proc'] = bproc
-        logger.info(f"Browser launched for manual setup on display {display}")
+        
+        # Give browser a moment to start and check if it crashed
+        time.sleep(2)
+        if bproc.poll() is not None:
+            # Browser crashed - read log
+            try:
+                log_fp.close()
+                with open(log_path, 'r') as f:
+                    error_log = f.read()
+                logger.error(f"Browser crashed: {error_log}")
+            except Exception:
+                logger.error("Browser crashed immediately")
+        else:
+            logger.info(f"Browser launched for manual setup on display {display}")
     except Exception as e:
         logger.warning(f"Failed to launch browser: {e}")
     
