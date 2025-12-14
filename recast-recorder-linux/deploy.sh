@@ -33,5 +33,5 @@ echo "Deployment complete. Files copied to $DEST_DIR"
 ls -la "$DEST_DIR"
 
 echo "Restarting service..."
-systemctl restart recast-recorder.service
 systemctl daemon-reload
+systemctl restart recast-recorder.service
