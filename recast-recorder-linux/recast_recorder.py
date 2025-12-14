@@ -1138,7 +1138,9 @@ except Exception as e:
         else:
             logger.info(f"Browser launched for manual setup on display {display}")
     except Exception as e:
+        import traceback
         logger.warning(f"Failed to launch browser: {e}")
+        logger.warning(f"Traceback: {traceback.format_exc()}")
     
     ok = vnc_proc is not None and vnc_proc.poll() is None
     logger.info(f"VNC started on port {vnc_port}")
