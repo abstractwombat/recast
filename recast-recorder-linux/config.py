@@ -85,7 +85,7 @@ def _apply_defaults(config: dict) -> dict:
         },
         "paths": {
             "output_dir": "/opt/recast/recordings",
-            "chrome_profiles_dir": str(Path.home() / ".recast-chrome"),
+            "chrome_profiles_dir": "/opt/recast/chrome_profiles",
         },
     }
     

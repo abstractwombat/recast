@@ -1120,14 +1120,20 @@ except Exception as e:
             pass
         ctrl_env['SESSION_ERROR_FLAG'] = error_flag_path
         
-        # Use session's Chrome profile
+        # Use session's Chrome profile - ensure directory exists with proper permissions
         try:
             profiles_base = Path(CHROME_PROFILES_BASE_DIR)
+            profiles_base.mkdir(parents=True, exist_ok=True)
             session_profile = profiles_base / 'default_session'
+            session_profile.mkdir(parents=True, exist_ok=True)
+            # Create Default profile subdirectory
+            default_profile = session_profile / 'Default'
+            default_profile.mkdir(parents=True, exist_ok=True)
             ctrl_env['CHROME_USER_DATA_DIR'] = str(session_profile)
             ctrl_env['CHROME_PROFILE_DIR'] = 'Default'
-        except Exception:
-            pass
+            logger.info(f"Chrome profile directory: {session_profile}")
+        except Exception as e:
+            logger.warning(f"Failed to create Chrome profile directory: {e}")
         
         # Launch controller
         log_path = TEMP_DIR / f'controller_{controller}.log'
