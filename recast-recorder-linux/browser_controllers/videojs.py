@@ -66,7 +66,8 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
     # Persistent user data dir to keep login cookies/sessions
     user_data_dir = os.environ.get('CHROME_USER_DATA_DIR')
     if not user_data_dir:
-        user_data_dir = str(Path.home() / '.recast-chrome')
+        # Fallback to /tmp if env var not set (avoid home directory which may not be writable)
+        user_data_dir = '/tmp/recast-chrome'
     try:
         Path(user_data_dir).mkdir(parents=True, exist_ok=True)
     except Exception:

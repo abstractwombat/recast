@@ -614,12 +614,15 @@ def session_launch():
         # Ensure this process (and children) have DISPLAY set for any utilities that may inherit
         os.environ['DISPLAY'] = display_name
         # Build environment similar to start_browser
-        xauth_file = Path.home() / '.Xauthority'
+        # Use TEMP_DIR for .Xauthority instead of home directory (may not be writable)
+        xauth_file = TEMP_DIR / '.Xauthority'
         if not xauth_file.exists():
             try:
+                TEMP_DIR.mkdir(parents=True, exist_ok=True)
                 xauth_file.touch(mode=0o600)
             except Exception:
                 pass
+        os.environ['XAUTHORITY'] = str(xauth_file)
         # Create wrapper for the controller session
         if mode == 'automated':
             wrapper_script = f"""
@@ -1031,6 +1034,9 @@ def browser_session_start_vnc():
     
     # Launch a simple browser for manual setup
     try:
+        # Ensure temp directory exists
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        
         # Ensure Chrome profile directory exists
         profiles_base = Path(CHROME_PROFILES_BASE_DIR)
         profiles_base.mkdir(parents=True, exist_ok=True)
@@ -1605,12 +1611,15 @@ import {browser_controller}
     python_executable = str(venv_python) if venv_python.exists() else sys.executable
     
     # Prepare environment with X authority
-    # Create dummy .Xauthority file if it doesn't exist
-    # pyautogui -> mouseinfo tries to read it at import time
-    xauth_file = Path.home() / '.Xauthority'
+    # Use TEMP_DIR for .Xauthority instead of home directory (may not be writable)
+    xauth_file = TEMP_DIR / '.Xauthority'
     if not xauth_file.exists():
-        xauth_file.touch(mode=0o600)
-        logger.info(f"Created dummy .Xauthority file: {xauth_file}")
+        try:
+            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            xauth_file.touch(mode=0o600)
+            logger.info(f"Created .Xauthority file: {xauth_file}")
+        except Exception:
+            pass
     
     browser_env = os.environ.copy()
     # Per-controller Chrome profile dir
