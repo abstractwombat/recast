@@ -8,12 +8,17 @@ import time
 import sys
 import logging
 import traceback
+
+# Disable MouseInfo before importing pyautogui (requires tkinter which may not be installed)
+sys.modules['mouseinfo'] = type(sys)('mouseinfo')
+import pyautogui
+pyautogui.FAILSAFE = False
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import pyautogui 
 from selenium.common.exceptions import TimeoutException
 from pathlib import Path
 

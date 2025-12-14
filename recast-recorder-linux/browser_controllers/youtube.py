@@ -8,17 +8,22 @@ import time
 import sys
 import logging
 import traceback
+import tempfile
+import shutil
+
+# Disable MouseInfo before importing pyautogui (requires tkinter which may not be installed)
+sys.modules['mouseinfo'] = type(sys)('mouseinfo')
+import pyautogui
+pyautogui.FAILSAFE = False
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
-import pyautogui 
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from pathlib import Path
-import tempfile
-import shutil
 
 logging.basicConfig(level=logging.INFO, format='(Browser-YouTube) %(levelname)s: %(message)s')
 
