@@ -1769,8 +1769,54 @@ def get_audio_source():
         logger.warning(f"Failed to detect audio source: {e}, using configured value")
         return AUDIO_SOURCE_NAME
 
+def _check_hw_accel_available(hw_type):
+    """Check if hardware acceleration is available."""
+    try:
+        if hw_type == 'nvenc':
+            # Check if NVIDIA driver and CUDA are available
+            result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
+            if result.returncode != 0:
+                logger.warning("NVENC requested but nvidia-smi failed - NVIDIA driver not available")
+                return False
+            # Also check if ffmpeg has nvenc support
+            result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, timeout=10)
+            if 'h264_nvenc' not in result.stdout:
+                logger.warning("NVENC requested but ffmpeg doesn't have h264_nvenc encoder")
+                return False
+            return True
+        elif hw_type == 'vaapi':
+            # Check if VAAPI device exists
+            if not Path('/dev/dri/renderD128').exists():
+                logger.warning("VAAPI requested but /dev/dri/renderD128 not found")
+                return False
+            result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, timeout=10)
+            if 'h264_vaapi' not in result.stdout:
+                logger.warning("VAAPI requested but ffmpeg doesn't have h264_vaapi encoder")
+                return False
+            return True
+        elif hw_type == 'qsv':
+            # Check for Intel QSV
+            result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, timeout=10)
+            if 'h264_qsv' not in result.stdout:
+                logger.warning("QSV requested but ffmpeg doesn't have h264_qsv encoder")
+                return False
+            return True
+        else:
+            return True  # 'none' or unknown - use software
+    except Exception as e:
+        logger.warning(f"Failed to check hardware acceleration availability: {e}")
+        return False
+
 def _get_video_encoder_opts():
     """Build video encoder options based on hardware acceleration setting."""
+    global VIDEO_HW_ACCEL
+    
+    # Check if requested hardware acceleration is available
+    if VIDEO_HW_ACCEL in ('nvenc', 'vaapi', 'qsv'):
+        if not _check_hw_accel_available(VIDEO_HW_ACCEL):
+            logger.warning(f"Hardware acceleration '{VIDEO_HW_ACCEL}' not available, falling back to software encoding")
+            VIDEO_HW_ACCEL = 'none'
+    
     if VIDEO_HW_ACCEL == 'vaapi':
         return [
             '-vaapi_device', '/dev/dri/renderD128',
