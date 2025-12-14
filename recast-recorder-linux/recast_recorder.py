@@ -1052,8 +1052,14 @@ def controller_run():
         return jsonify({'status': 'error', 'message': 'Failed to create browser session'}), 500
     
     # Check if session already has a controller running
-    if sess.get('controller'):
+    cproc = sess.get('controller_proc')
+    if cproc and cproc.poll() is None:
         return jsonify({'status': 'error', 'message': f'Controller {sess.get("controller")} already running'}), 400
+    
+    # Clear stale controller info if process has exited
+    if sess.get('controller'):
+        sess['controller'] = None
+        sess['controller_proc'] = None
     
     # Normalize URL
     try:
@@ -1147,9 +1153,7 @@ print('[controller] invoking controller.run_browser_session target_url=' + {url!
                 except Exception:
                     pass
         
-        threading.Thread(target=_tee_stream, args=(cproc, log_fp), daemon=True).start()
-        
-        # Start VNC if not already running
+        # Start VNC first so user can see what's happening
         vnc_proc = sess.get('vnc_proc')
         vnc_port = sess.get('vnc_port')
         if not vnc_proc or vnc_proc.poll() is not None:
@@ -1157,6 +1161,21 @@ print('[controller] invoking controller.run_browser_session target_url=' + {url!
             vnc_proc = start_vnc_server(display_name, port=vnc_port)
             sess['vnc_proc'] = vnc_proc
             sess['vnc_port'] = vnc_port
+            time.sleep(1)  # Give VNC a moment to start
+        
+        threading.Thread(target=_tee_stream, args=(cproc, log_fp), daemon=True).start()
+        
+        # Give the controller a moment to start and check if it crashed immediately
+        time.sleep(2)
+        if cproc.poll() is not None:
+            # Process exited immediately - read any error output
+            try:
+                with open(log_path, 'r') as f:
+                    error_output = f.read()[-500:]  # Last 500 chars
+                logger.error(f"Controller crashed immediately: {error_output}")
+                return jsonify({'status': 'error', 'message': f'Controller crashed: {error_output}'}), 500
+            except Exception:
+                return jsonify({'status': 'error', 'message': 'Controller crashed immediately'}), 500
         
         # Update session with controller info
         sess['controller'] = controller
