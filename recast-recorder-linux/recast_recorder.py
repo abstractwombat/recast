@@ -372,17 +372,17 @@ def test_recording_start():
             return jsonify({'status': 'error', 'message': 'Failed to start FFmpeg recording'}), 500
         
         test_recording_active = True
-        test_recording_controller = controller
+        test_recording_controller = session_name
         test_recording_start_time = time.time()
         LIVE_START_TIME = datetime.now(timezone.utc).isoformat()
         
-        logger.info(f"Test recording started on display {display} for controller {controller}")
+        logger.info(f"Test recording started on display {display} for session {session_name}")
         
         return jsonify({
             'status': 'success',
             'message': 'Test recording started',
             'display': display,
-            'controller': controller,
+            'controller': session_name,
         })
     except Exception as e:
         logger.error(f"Failed to start test recording: {e}")
