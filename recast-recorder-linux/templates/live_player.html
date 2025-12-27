@@ -41,14 +41,30 @@
         const jobId = params.get('job_id') || 'default';
         const STORAGE_KEY = `recast_live_position_${jobId}`;
         const streamUrl = '/live_hls/stream.m3u8';
+        let streamStartTime = null;
+
+        async function fetchStreamStartTime() {
+            try {
+                const r = await fetch('/api/live_ready', { cache: 'no-store' });
+                const j = await r.json();
+                if (j && typeof j.start_time !== 'undefined' && j.start_time !== null) {
+                    return j.start_time;
+                }
+            } catch {}
+            return null;
+        }
 
         function loadSavedPosition() {
             try {
                 const saved = localStorage.getItem(STORAGE_KEY);
-                if (!saved) return 0;
+                if (!saved) return null;
                 const data = JSON.parse(saved);
-                return Number(data.position || 0) || 0;
-            } catch { return 0; }
+                const pos = Number(data.position || 0) || 0;
+                const st = data.stream_start_time;
+                if (streamStartTime !== null && st !== streamStartTime) return null;
+                if (pos <= 0) return null;
+                return { position: pos, stream_start_time: st };
+            } catch { return null; }
         }
 
         function clampToSeekable(t) {
@@ -68,56 +84,71 @@
         function savePosition() {
             try {
                 if (isFinite(video.currentTime) && video.currentTime > 0) {
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify({ position: video.currentTime, ts: Date.now() }));
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify({ position: video.currentTime, ts: Date.now(), stream_start_time: streamStartTime }));
                 }
             } catch {}
         }
 
-        function applyInitialSeek() {
+        function applyInitialSeekWhenReady() {
             const saved = loadSavedPosition();
-            if (saved > 0) {
-                const target = clampToSeekable(saved);
-                try { video.currentTime = target; } catch {}
-            } else {
-                // First viewing: start from beginning of available buffer
+            const deadline = Date.now() + 8000;
+
+            const attempt = () => {
                 try {
-                    if (video.seekable && video.seekable.length > 0) {
-                        const start = video.seekable.start(0);
-                        if (isFinite(start)) video.currentTime = start + 0.25;
+                    if (!video.seekable || video.seekable.length <= 0) {
+                        if (Date.now() < deadline) return setTimeout(attempt, 200);
+                        return;
+                    }
+                    if (saved && saved.position > 0) {
+                        const target = clampToSeekable(saved.position);
+                        try { video.currentTime = target; } catch {}
+                        return;
+                    }
+                    const start = video.seekable.start(0);
+                    if (isFinite(start)) {
+                        try { video.currentTime = start + 0.25; } catch {}
                     }
                 } catch {}
-            }
+            };
+
+            attempt();
         }
 
-        if (window.shaka) {
-            shaka.polyfill.installAll();
-            const player = new shaka.Player(video);
-            const ui = new shaka.ui.Overlay(player, container, video);
-            ui.configure({
-                addSeekBar: true,
-                controlPanelElements: ['play_pause', 'time_and_duration', 'mute', 'volume', 'spacer', 'rewind', 'fast_forward', 'picture_in_picture', 'airplay', 'cast', 'fullscreen', 'playback_rate'],
-                castReceiverAppId: 'CC1AD845'
-            });
-            try { video.removeAttribute('controls'); } catch {}
-            player.configure({ streaming: { rebufferingGoal: 2, bufferingGoal: 10 } });
-            player.addEventListener('error', e => console.error('Shaka error', e));
-            player.load(streamUrl).then(() => {
-                applyInitialSeek();
-                const tryPlay = () => { video.play().catch(()=>{}); video.removeEventListener('canplay', tryPlay); };
-                video.addEventListener('canplay', tryPlay);
-                video.play().catch(()=>{});
-            }).catch(err => console.error('Load failed', err));
-            setupKeyboardShortcuts();
-        } else {
-            video.src = streamUrl;
-            video.addEventListener('loadedmetadata', function () {
-                try { video.controls = true; } catch {}
-                applyInitialSeek();
-                const tryPlay = () => { video.play().catch(()=>{}); video.removeEventListener('canplay', tryPlay); };
-                video.addEventListener('canplay', tryPlay);
-                video.play().catch(()=>{});
-            });
-        }
+        (async () => {
+            streamStartTime = await fetchStreamStartTime();
+
+            if (window.shaka) {
+                shaka.polyfill.installAll();
+                const player = new shaka.Player(video);
+                const ui = new shaka.ui.Overlay(player, container, video);
+                ui.configure({
+                    addSeekBar: true,
+                    controlPanelElements: ['play_pause', 'time_and_duration', 'mute', 'volume', 'spacer', 'rewind', 'fast_forward', 'picture_in_picture', 'airplay', 'cast', 'fullscreen', 'playback_rate'],
+                    castReceiverAppId: 'CC1AD845'
+                });
+                try { video.removeAttribute('controls'); } catch {}
+                player.configure({ streaming: { rebufferingGoal: 2, bufferingGoal: 10 } });
+                player.addEventListener('error', e => console.error('Shaka error', e));
+                player.load(streamUrl).then(() => {
+                    applyInitialSeekWhenReady();
+                    const tryPlay = () => { video.play().catch(()=>{}); video.removeEventListener('canplay', tryPlay); };
+                    video.addEventListener('canplay', tryPlay);
+                    video.play().catch(()=>{});
+                }).catch(err => {
+                    console.error('Load failed', err);
+                });
+                setupKeyboardShortcuts();
+            } else {
+                video.src = streamUrl;
+                video.addEventListener('loadedmetadata', function () {
+                    try { video.controls = true; } catch {}
+                    applyInitialSeekWhenReady();
+                    const tryPlay = () => { video.play().catch(()=>{}); video.removeEventListener('canplay', tryPlay); };
+                    video.addEventListener('canplay', tryPlay);
+                    video.play().catch(()=>{});
+                });
+            }
+        })();
 
         // Periodic save
         const interval = setInterval(savePosition, 10000);
@@ -128,8 +159,8 @@
         function setupKeyboardShortcuts() {
             document.addEventListener('keydown', (e) => {
                 if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-                if (e.key === 'j' || e.key === 'J') { try { video.currentTime = Math.max(0, video.currentTime - 10); } catch {} }
-                if (e.key === 'l' || e.key === 'L') { try { video.currentTime = Math.min((video.duration||1e9), video.currentTime + 30); } catch {} }
+                if (e.key === 'j' || e.key === 'J') { try { video.currentTime = clampToSeekable(video.currentTime - 10); } catch {} }
+                if (e.key === 'l' || e.key === 'L') { try { video.currentTime = clampToSeekable(video.currentTime + 30); } catch {} }
                 if (e.key === 'k' || e.key === 'K' || e.code === 'Space') { try { if (video.paused) video.play(); else video.pause(); } catch {} }
             });
         }

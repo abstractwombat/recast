@@ -157,7 +157,20 @@ def serve_hls(filename):
     """Serve HLS segments for live streaming."""
     try:
         _track_live_client()
-        return send_from_directory(HLS_DIR, filename)
+        resp = send_from_directory(HLS_DIR, filename)
+        try:
+            lower = filename.lower()
+            if lower.endswith('.m3u8'):
+                resp.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+                resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+                resp.headers['Pragma'] = 'no-cache'
+            elif lower.endswith('.ts'):
+                resp.headers['Content-Type'] = 'video/mp2t'
+                resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+                resp.headers['Pragma'] = 'no-cache'
+        except Exception:
+            pass
+        return resp
     except FileNotFoundError:
         return "", 404
 
@@ -1996,10 +2009,19 @@ def start_ffmpeg_recording(display):
             '-i', 'anullsrc=r=48000:cl=stereo',
         ]
 
+    eff_hls_flags = HLS_FLAGS
+    try:
+        # If list size is 0 (unlimited), do not delete segments so DVR can rewind to the beginning.
+        if int(HLS_LIST_SIZE) <= 0:
+            parts = [p for p in str(eff_hls_flags).split('+') if p and p != 'delete_segments']
+            eff_hls_flags = '+'.join(parts)
+    except Exception:
+        pass
+
     hls_opts = [
         '-hls_time', HLS_TIME,
         '-hls_list_size', HLS_LIST_SIZE,
-        '-hls_flags', HLS_FLAGS,
+        '-hls_flags', eff_hls_flags,
     ]
     if HLS_PLAYLIST_TYPE and HLS_PLAYLIST_TYPE.strip() and HLS_PLAYLIST_TYPE.strip().lower() not in ('none', 'null'):
         hls_opts += ['-hls_playlist_type', HLS_PLAYLIST_TYPE]
