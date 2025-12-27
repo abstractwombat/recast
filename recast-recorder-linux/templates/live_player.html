@@ -19,8 +19,25 @@
         #player-container { position: relative; }
         video {
             width: 100%;
-            max-width: 1280px;
             height: auto;
+        }
+        /* Ensure fullscreen uses the full viewport (override max-width layout) */
+        #player-container:fullscreen,
+        #player-container:-webkit-full-screen {
+            width: 100vw !important;
+            height: 100vh !important;
+            max-width: none !important;
+        }
+        #player-container:fullscreen video,
+        #player-container:-webkit-full-screen video {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: contain;
+        }
+        #player-container:fullscreen .shaka-video-container,
+        #player-container:-webkit-full-screen .shaka-video-container {
+            width: 100% !important;
+            height: 100% !important;
         }
         /* Ensure Shaka seek bar is visible and not hidden under the controls */
         .shaka-controls-container { z-index: 10 !important; }
