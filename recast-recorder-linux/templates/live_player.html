@@ -43,6 +43,38 @@
         const streamUrl = '/live_hls/stream.m3u8';
         let streamStartTime = null;
 
+        function hasShaka() {
+            try {
+                return !!(window.shaka && window.shaka.Player && window.shaka.ui && window.shaka.ui.Overlay);
+            } catch {
+                return false;
+            }
+        }
+
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = src;
+                s.async = true;
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+                document.head.appendChild(s);
+            });
+        }
+
+        async function ensureShakaLoaded() {
+            if (hasShaka()) return true;
+            try {
+                await loadScript('https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/shaka-player.ui.min.js');
+            } catch {}
+            if (hasShaka()) return true;
+            try {
+                await loadScript('https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/shaka-player.compiled.js');
+                await loadScript('https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.5.0/shaka-player.ui.js');
+            } catch {}
+            return hasShaka();
+        }
+
         async function fetchStreamStartTime() {
             try {
                 const r = await fetch('/api/live_ready', { cache: 'no-store' });
@@ -117,10 +149,17 @@
         (async () => {
             streamStartTime = await fetchStreamStartTime();
 
-            if (window.shaka) {
-                shaka.polyfill.installAll();
+            const shakaOk = await ensureShakaLoaded();
+            console.info('[recast-live] shaka available:', shakaOk);
+
+            if (shakaOk) {
+                window.shaka.polyfill.installAll();
                 const player = new shaka.Player(video);
                 const ui = new shaka.ui.Overlay(player, container, video);
+                try {
+                    window.__recastShakaPlayer = player;
+                    window.__recastShakaUi = ui;
+                } catch {}
                 ui.configure({
                     addSeekBar: true,
                     controlPanelElements: ['play_pause', 'time_and_duration', 'mute', 'volume', 'spacer', 'rewind', 'fast_forward', 'picture_in_picture', 'airplay', 'cast', 'fullscreen', 'playback_rate'],
@@ -139,6 +178,7 @@
                 });
                 setupKeyboardShortcuts();
             } else {
+                console.info('[recast-live] using native playback');
                 video.src = streamUrl;
                 video.addEventListener('loadedmetadata', function () {
                     try { video.controls = true; } catch {}
