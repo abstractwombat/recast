@@ -43,8 +43,24 @@ VIDEO_THREADS = str(config.video["threads"])
 VIDEO_PIX_FMT = config.video["pix_fmt"]
 VIDEO_PROFILE = config.video["profile"]
 GOP_MULT = config.video["gop_multiplier"]
+GOP_SECONDS = config.video.get("gop_seconds", 0)
 HLS_TIME = str(config.video["hls_time"])
+HLS_LIST_SIZE = str(config.video.get("hls_list_size", 0))
+HLS_FLAGS = str(config.video.get("hls_flags", "independent_segments+append_list"))
+HLS_PLAYLIST_TYPE = str(config.video.get("hls_playlist_type", "event"))
+FPS_MODE = str(config.video.get("fps_mode", "cfr"))
 VIDEO_HW_ACCEL = config.video.get("hw_accel", "none")
+
+NVENC_PRESET = str(config.video.get("nvenc_preset", "p4"))
+NVENC_RC = str(config.video.get("nvenc_rc", "vbr"))
+NVENC_TUNE = str(config.video.get("nvenc_tune", ""))
+NVENC_CQ = config.video.get("nvenc_cq", 0)
+NVENC_PROFILE = str(config.video.get("nvenc_profile", ""))
+NVENC_BFRAMES = config.video.get("nvenc_bframes", 0)
+NVENC_LOOKAHEAD = config.video.get("nvenc_lookahead", 0)
+NVENC_SPATIAL_AQ = config.video.get("nvenc_spatial_aq", 0)
+NVENC_TEMPORAL_AQ = config.video.get("nvenc_temporal_aq", 0)
+NVENC_AQ_STRENGTH = config.video.get("nvenc_aq_strength", 0)
 
 # Audio encoding settings
 AUDIO_BITRATE_K = str(config.audio["bitrate_kbps"])
@@ -225,6 +241,9 @@ def update_config():
     global VIDEO_PRESET, VIDEO_CRF, VIDEO_MAXRATE_K, VIDEO_BUFSIZE_K
     global VIDEO_THREADS, VIDEO_PIX_FMT, VIDEO_PROFILE, GOP_MULT, HLS_TIME
     global VIDEO_HW_ACCEL
+    global GOP_SECONDS, HLS_LIST_SIZE, HLS_FLAGS, HLS_PLAYLIST_TYPE, FPS_MODE
+    global NVENC_PRESET, NVENC_RC, NVENC_TUNE, NVENC_CQ, NVENC_PROFILE
+    global NVENC_BFRAMES, NVENC_LOOKAHEAD, NVENC_SPATIAL_AQ, NVENC_TEMPORAL_AQ, NVENC_AQ_STRENGTH
     global AUDIO_BITRATE_K, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
     
     try:
@@ -245,9 +264,14 @@ def update_config():
         if 'video' in payload:
             vid = payload['video']
             for key in ['preset', 'crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 
-                        'pix_fmt', 'profile', 'gop_multiplier', 'hls_time', 'hw_accel']:
+                        'pix_fmt', 'profile', 'gop_multiplier', 'gop_seconds',
+                        'hls_time', 'hls_list_size', 'hls_flags', 'hls_playlist_type',
+                        'fps_mode', 'hw_accel',
+                        'nvenc_preset', 'nvenc_rc', 'nvenc_tune', 'nvenc_cq', 'nvenc_profile',
+                        'nvenc_bframes', 'nvenc_lookahead', 'nvenc_spatial_aq', 'nvenc_temporal_aq', 'nvenc_aq_strength']:
                 if key in vid:
-                    if key in ['crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 'gop_multiplier', 'hls_time']:
+                    if key in ['crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 'gop_multiplier', 'gop_seconds', 'hls_time', 'hls_list_size',
+                               'nvenc_cq', 'nvenc_bframes', 'nvenc_lookahead', 'nvenc_spatial_aq', 'nvenc_temporal_aq', 'nvenc_aq_strength']:
                         full_config['video'][key] = int(vid[key])
                     else:
                         full_config['video'][key] = str(vid[key])
@@ -279,8 +303,24 @@ def update_config():
         VIDEO_PIX_FMT = config.video["pix_fmt"]
         VIDEO_PROFILE = config.video["profile"]
         GOP_MULT = config.video["gop_multiplier"]
+        GOP_SECONDS = config.video.get("gop_seconds", 0)
         HLS_TIME = str(config.video["hls_time"])
+        HLS_LIST_SIZE = str(config.video.get("hls_list_size", 0))
+        HLS_FLAGS = str(config.video.get("hls_flags", "independent_segments+append_list"))
+        HLS_PLAYLIST_TYPE = str(config.video.get("hls_playlist_type", "event"))
+        FPS_MODE = str(config.video.get("fps_mode", "cfr"))
         VIDEO_HW_ACCEL = config.video.get("hw_accel", "none")
+
+        NVENC_PRESET = str(config.video.get("nvenc_preset", "p4"))
+        NVENC_RC = str(config.video.get("nvenc_rc", "vbr"))
+        NVENC_TUNE = str(config.video.get("nvenc_tune", ""))
+        NVENC_CQ = config.video.get("nvenc_cq", 0)
+        NVENC_PROFILE = str(config.video.get("nvenc_profile", ""))
+        NVENC_BFRAMES = config.video.get("nvenc_bframes", 0)
+        NVENC_LOOKAHEAD = config.video.get("nvenc_lookahead", 0)
+        NVENC_SPATIAL_AQ = config.video.get("nvenc_spatial_aq", 0)
+        NVENC_TEMPORAL_AQ = config.video.get("nvenc_temporal_aq", 0)
+        NVENC_AQ_STRENGTH = config.video.get("nvenc_aq_strength", 0)
         
         AUDIO_BITRATE_K = str(config.audio["bitrate_kbps"])
         AUDIO_SAMPLE_RATE = str(config.audio["sample_rate"])
@@ -1805,6 +1845,20 @@ def _get_video_encoder_opts():
     """Build video encoder options based on hardware acceleration setting.
     Returns (opts_list, error_message). If error_message is not None, recording should fail.
     """
+
+    def _gop_frames():
+        try:
+            gs = int(GOP_SECONDS)
+            if gs and gs > 0:
+                return max(1, int(FRAMERATE) * gs)
+        except Exception:
+            pass
+        try:
+            return max(1, int(FRAMERATE) * int(GOP_MULT))
+        except Exception:
+            return max(1, int(FRAMERATE))
+
+    gop_frames = _gop_frames()
     # Check if requested hardware acceleration is available
     if VIDEO_HW_ACCEL in ('nvenc', 'vaapi', 'qsv'):
         available, error_msg = _check_hw_accel_available(VIDEO_HW_ACCEL)
@@ -1817,28 +1871,63 @@ def _get_video_encoder_opts():
             '-vf', 'format=nv12,hwupload',
             '-c:v', 'h264_vaapi',
             '-qp', str(VIDEO_CRF),
-            '-g', str(FRAMERATE * GOP_MULT),
+            '-g', str(gop_frames),
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
         ], None
     elif VIDEO_HW_ACCEL == 'nvenc':
-        return [
+        try:
+            cq = int(NVENC_CQ) if int(NVENC_CQ) > 0 else int(VIDEO_CRF)
+        except Exception:
+            cq = int(VIDEO_CRF)
+        opts = [
             '-c:v', 'h264_nvenc',
             '-pix_fmt', VIDEO_PIX_FMT,
-            '-preset', 'p4',
-            '-rc', 'vbr',
-            '-cq', str(VIDEO_CRF),
-            '-g', str(FRAMERATE * GOP_MULT),
+            '-preset', NVENC_PRESET,
+            '-rc', NVENC_RC,
+            '-cq', str(cq),
+            '-g', str(gop_frames),
+            '-forced-idr', '1',
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
-        ], None
+        ]
+        if NVENC_TUNE and NVENC_TUNE.strip():
+            opts += ['-tune', NVENC_TUNE.strip()]
+        if NVENC_PROFILE and NVENC_PROFILE.strip():
+            opts += ['-profile:v', NVENC_PROFILE.strip()]
+        try:
+            if int(NVENC_BFRAMES) > 0:
+                opts += ['-bf', str(int(NVENC_BFRAMES))]
+        except Exception:
+            pass
+        try:
+            if int(NVENC_LOOKAHEAD) > 0:
+                opts += ['-rc-lookahead', str(int(NVENC_LOOKAHEAD))]
+        except Exception:
+            pass
+        try:
+            if int(NVENC_SPATIAL_AQ) == 1:
+                opts += ['-spatial-aq', '1']
+        except Exception:
+            pass
+        try:
+            if int(NVENC_TEMPORAL_AQ) == 1:
+                opts += ['-temporal-aq', '1']
+        except Exception:
+            pass
+        try:
+            if int(NVENC_AQ_STRENGTH) > 0:
+                opts += ['-aq-strength', str(int(NVENC_AQ_STRENGTH))]
+        except Exception:
+            pass
+        return opts, None
     elif VIDEO_HW_ACCEL == 'qsv':
         return [
             '-c:v', 'h264_qsv',
             '-pix_fmt', VIDEO_PIX_FMT,
             '-preset', VIDEO_PRESET,
             '-global_quality', str(VIDEO_CRF),
-            '-g', str(FRAMERATE * GOP_MULT),
+            '-g', str(gop_frames),
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
         ], None
@@ -1850,7 +1939,9 @@ def _get_video_encoder_opts():
             '-profile:v', VIDEO_PROFILE,
             '-preset', VIDEO_PRESET,
             '-crf', str(VIDEO_CRF),
-            '-g', str(FRAMERATE * GOP_MULT),
+            '-g', str(gop_frames),
+            '-keyint_min', str(gop_frames),
+            '-sc_threshold', '0',
             '-threads', VIDEO_THREADS,
             '-maxrate', f'{VIDEO_MAXRATE_K}k',
             '-bufsize', f'{VIDEO_BUFSIZE_K}k',
@@ -1905,18 +1996,23 @@ def start_ffmpeg_recording(display):
             '-i', 'anullsrc=r=48000:cl=stereo',
         ]
 
+    hls_opts = [
+        '-hls_time', HLS_TIME,
+        '-hls_list_size', HLS_LIST_SIZE,
+        '-hls_flags', HLS_FLAGS,
+    ]
+    if HLS_PLAYLIST_TYPE and HLS_PLAYLIST_TYPE.strip() and HLS_PLAYLIST_TYPE.strip().lower() not in ('none', 'null'):
+        hls_opts += ['-hls_playlist_type', HLS_PLAYLIST_TYPE]
+
     # --- ENCODING AND OUTPUT ---
-    command += ['-vsync', '2'] + video_enc_opts + [
+    command += ['-fps_mode', FPS_MODE] + video_enc_opts + [
         '-c:a', 'aac',
         '-ar', AUDIO_SAMPLE_RATE,
         '-b:a', f'{AUDIO_BITRATE_K}k',
         '-ac', AUDIO_CHANNELS,
         '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
 
-        '-hls_time', HLS_TIME,
-        '-hls_list_size', '0',
-        '-hls_flags', 'independent_segments+append_list',
-        '-hls_playlist_type', 'event',
+        *hls_opts,
         '-f', 'hls',
         str(HLS_DIR / 'stream.m3u8')
     ]
@@ -1926,6 +2022,12 @@ def start_ffmpeg_recording(display):
     try:
         # Log FFmpeg output to file for debugging
         with open(ffmpeg_log, 'w') as log_file:
+            try:
+                log_file.write(f"[recorder] FFmpeg command: {' '.join(command)}\n")
+                log_file.write(f"[recorder] Effective config: fps_mode={FPS_MODE} gop_mult={GOP_MULT} gop_seconds={GOP_SECONDS} hls_time={HLS_TIME} hls_list_size={HLS_LIST_SIZE} hls_flags={HLS_FLAGS} hls_playlist_type={HLS_PLAYLIST_TYPE} hw_accel={VIDEO_HW_ACCEL}\n")
+                log_file.flush()
+            except Exception:
+                pass
             ffmpeg_process = subprocess.Popen(
                 command,
                 stdout=log_file,
@@ -1958,12 +2060,17 @@ def start_ffmpeg_recording(display):
                         '-framerate', str(FRAMERATE),
                         '-i', display,
                         '-f', 'pulse', '-thread_queue_size', '4096', '-i', 'default',
-                        '-vsync', '2',
+                        '-fps_mode', FPS_MODE,
                     ] + video_enc_opts + [
                         '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
-                        '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
+                        *hls_opts, '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                     ]
                     with open(ffmpeg_log, 'w') as log_file:
+                        try:
+                            log_file.write(f"[recorder] FFmpeg command: {' '.join(default_cmd)}\n")
+                            log_file.flush()
+                        except Exception:
+                            pass
                         ffmpeg_process = subprocess.Popen(
                             default_cmd,
                             stdout=log_file,
@@ -1996,13 +2103,18 @@ def start_ffmpeg_recording(display):
                             '-framerate', str(FRAMERATE),
                             '-i', display,
                             '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(AUDIO_FIFO),
-                            '-vsync', '2',
+                            '-fps_mode', FPS_MODE,
                         ] + video_enc_opts + [
                             '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
-                            '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
+                            *hls_opts, '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                         ]
 
                         with open(ffmpeg_log, 'w') as log_file:
+                            try:
+                                log_file.write(f"[recorder] FFmpeg command: {' '.join(fifo_cmd)}\n")
+                                log_file.flush()
+                            except Exception:
+                                pass
                             ffmpeg_process = subprocess.Popen(
                                 fifo_cmd,
                                 stdout=log_file,
@@ -2054,12 +2166,17 @@ def start_ffmpeg_recording(display):
                     '-framerate', str(FRAMERATE),
                     '-i', display,
                     '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
-                    '-vsync', '2',
+                    '-fps_mode', FPS_MODE,
                 ] + video_enc_opts + [
                     '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
-                    '-hls_time', HLS_TIME, '-hls_list_size', '0', '-hls_flags', 'independent_segments+append_list', '-hls_playlist_type', 'event', '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
+                    *hls_opts, '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                 ]
                 with open(ffmpeg_log, 'w') as log_file:
+                    try:
+                        log_file.write(f"[recorder] FFmpeg command: {' '.join(fallback_cmd)}\n")
+                        log_file.flush()
+                    except Exception:
+                        pass
                     ffmpeg_process = subprocess.Popen(
                         fallback_cmd,
                         stdout=log_file,

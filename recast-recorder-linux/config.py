@@ -75,8 +75,27 @@ def _apply_defaults(config: dict) -> dict:
             "pix_fmt": "yuv420p",
             "profile": "baseline",
             "gop_multiplier": 2,
+            # If > 0, overrides gop_multiplier and sets GOP to (framerate * gop_seconds)
+            "gop_seconds": 0,
             "hls_time": 5,
+            "hls_list_size": 0,
+            "hls_flags": "independent_segments+append_list",
+            "hls_playlist_type": "event",
+            # Video sync mode (replaces deprecated -vsync usage). Common values: cfr, vfr, passthrough
+            "fps_mode": "cfr",
             "hw_accel": "none",  # Options: none, vaapi, nvenc, qsv
+
+            # NVENC-specific options (used when hw_accel == 'nvenc')
+            "nvenc_preset": "p4",
+            "nvenc_rc": "vbr",
+            "nvenc_tune": "",
+            "nvenc_cq": 0,
+            "nvenc_profile": "",
+            "nvenc_bframes": 0,
+            "nvenc_lookahead": 0,
+            "nvenc_spatial_aq": 0,
+            "nvenc_temporal_aq": 0,
+            "nvenc_aq_strength": 0,
         },
         "audio": {
             "bitrate_kbps": 192,
