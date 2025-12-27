@@ -1638,6 +1638,9 @@ import {browser_controller}
             pass
     
     browser_env = os.environ.copy()
+    # Ensure the child process uses our X settings (containers/CI often lack ~/.Xauthority)
+    browser_env['DISPLAY'] = str(display)
+    browser_env['XAUTHORITY'] = str(xauth_file)
     # Per-controller Chrome profile dir
     try:
         profiles_base = Path(CHROME_PROFILES_BASE_DIR)
