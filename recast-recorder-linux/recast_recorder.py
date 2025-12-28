@@ -50,6 +50,8 @@ HLS_FLAGS = str(config.video.get("hls_flags", "independent_segments+append_list"
 HLS_PLAYLIST_TYPE = str(config.video.get("hls_playlist_type", "event"))
 FPS_MODE = str(config.video.get("fps_mode", "cfr"))
 VIDEO_HW_ACCEL = config.video.get("hw_accel", "none")
+INPUT_FRAMERATE = config.recording.get("input_framerate", 0)  # If > 0, capture at this rate
+OUTPUT_FRAMERATE = config.recording.get("output_framerate", 0)  # If > 0, encode at this rate
 
 NVENC_PRESET = str(config.video.get("nvenc_preset", "p4"))
 NVENC_RC = str(config.video.get("nvenc_rc", "vbr"))
@@ -1855,19 +1857,16 @@ def _check_hw_accel_available(hw_type):
         return False, str(e)
 
 def _get_video_encoder_opts():
-    """Build video encoder options based on hardware acceleration setting.
-    Returns (opts_list, error_message). If error_message is not None, recording should fail.
+    """Build video encoder options based on config.
+    Returns (opts_list, error_message). If error_message is not None, opts_list is None.
     """
-
     def _gop_frames():
         try:
-            gs = int(GOP_SECONDS)
-            if gs and gs > 0:
-                return max(1, int(FRAMERATE) * gs)
-        except Exception:
-            pass
-        try:
-            return max(1, int(FRAMERATE) * int(GOP_MULT))
+            # Use output framerate for GOP calculation if specified
+            output_fps = int(OUTPUT_FRAMERATE) if int(OUTPUT_FRAMERATE) > 0 else int(FRAMERATE)
+            if int(GOP_SECONDS) > 0:
+                return max(1, output_fps * int(GOP_SECONDS))
+            return max(1, output_fps * int(GOP_MULT))
         except Exception:
             return max(1, int(FRAMERATE))
 
@@ -1879,9 +1878,16 @@ def _get_video_encoder_opts():
             return None, f"Hardware acceleration '{VIDEO_HW_ACCEL}' not available: {error_msg}"
     
     if VIDEO_HW_ACCEL == 'vaapi':
+        # Build video filter chain
+        vf_parts = []
+        if int(OUTPUT_FRAMERATE) > 0:
+            vf_parts.append(f'fps={OUTPUT_FRAMERATE}')
+        vf_parts.extend(['format=nv12', 'hwupload'])
+        vf_str = ','.join(vf_parts)
+        
         return [
             '-vaapi_device', '/dev/dri/renderD128',
-            '-vf', 'format=nv12,hwupload',
+            '-vf', vf_str,
             '-c:v', 'h264_vaapi',
             '-qp', str(VIDEO_CRF),
             '-g', str(gop_frames),
@@ -1893,7 +1899,13 @@ def _get_video_encoder_opts():
             cq = int(NVENC_CQ) if int(NVENC_CQ) > 0 else int(VIDEO_CRF)
         except Exception:
             cq = int(VIDEO_CRF)
-        opts = [
+        
+        opts = []
+        # Add fps filter if output framerate specified
+        if int(OUTPUT_FRAMERATE) > 0:
+            opts += ['-vf', f'fps={OUTPUT_FRAMERATE}']
+        
+        opts += [
             '-c:v', 'h264_nvenc',
             '-pix_fmt', VIDEO_PIX_FMT,
             '-preset', NVENC_PRESET,
@@ -1980,6 +1992,9 @@ def start_ffmpeg_recording(display):
     # Get the audio source dynamically
     audio_source = get_audio_source()
 
+    # Determine capture framerate (use input_framerate if specified, otherwise use FRAMERATE)
+    capture_fps = int(INPUT_FRAMERATE) if int(INPUT_FRAMERATE) > 0 else int(FRAMERATE)
+    
     # Build FFmpeg command with audio and video
     command = [
         'ffmpeg',
@@ -1989,7 +2004,7 @@ def start_ffmpeg_recording(display):
         '-f', 'x11grab',
         '-thread_queue_size', '1024',
         '-video_size', f'{SCREEN_WIDTH}x{SCREEN_HEIGHT}',
-        '-framerate', str(FRAMERATE),
+        '-framerate', str(capture_fps),
         '-i', display,
     ]
 
@@ -2079,7 +2094,7 @@ def start_ffmpeg_recording(display):
                         '-f', 'x11grab',
                         '-thread_queue_size', '1024',
                         '-video_size', f'{SCREEN_WIDTH}x{SCREEN_HEIGHT}',
-                        '-framerate', str(FRAMERATE),
+                        '-framerate', str(capture_fps),
                         '-i', display,
                         '-f', 'pulse', '-thread_queue_size', '4096', '-i', 'default',
                         '-fps_mode', FPS_MODE,

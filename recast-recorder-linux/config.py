@@ -43,7 +43,10 @@ def load_config(config_path: Path = None) -> dict:
     config = {}
     if config_path and config_path.exists():
         with open(config_path, "rb") as f:
-            config = tomllib.load(f)
+            try:
+                config = tomllib.load(f)
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse TOML config at {config_path}: {e}")
     
     return _apply_defaults(config)
 

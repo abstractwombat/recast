@@ -13,6 +13,9 @@ screen_width = 1920
 screen_height = 1080
 framerate = 30
 audio_source_name = "virtsink.monitor"
+# Optional: Capture at higher framerate for smoother motion
+# input_framerate = 60  # Capture rate from X11 (0 = use framerate)
+# output_framerate = 30  # Encode rate (0 = use framerate). Requires input_framerate > output_framerate
 
 [video]
 preset = "ultrafast"
