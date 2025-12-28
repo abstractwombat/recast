@@ -369,8 +369,10 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         logging.info("Browser session active. Starting stall watchdog...")
 
         # Stall watchdog configuration
-        stall_seconds = int(os.environ.get('VIDEOJS_STALL_SECONDS', '20'))
+        stall_seconds = int(os.environ.get('VIDEOJS_STALL_SECONDS', '30'))
         poll_seconds = int(os.environ.get('VIDEOJS_WATCHDOG_POLL', '5'))
+        max_reload_attempts = int(os.environ.get('VIDEOJS_MAX_RELOADS', '5'))
+        reload_count = 0
 
         # Initialize progress tracking
         last_progress_ts = time.time()
@@ -401,15 +403,34 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                 return { 'found': False }
 
         def _recover_with_reload(crashed=False):
-            nonlocal last_progress_ts, last_ct
+            nonlocal last_progress_ts, last_ct, reload_count
+            
+            reload_count += 1
+            if reload_count > max_reload_attempts:
+                error_msg = f"Max reload attempts ({max_reload_attempts}) reached. Video playback unrecoverable."
+                logging.error(error_msg)
+                raise Exception(error_msg)
+            
             if crashed:
-                logging.error("Watchdog: Chrome tab crashed! Reloading page and reinitializing player...")
+                logging.error(f"Watchdog: Chrome tab crashed! Reload attempt {reload_count}/{max_reload_attempts}...")
             else:
-                logging.warning(f"Watchdog: no progress for >{stall_seconds}s; reloading page and reinitializing player...")
+                logging.warning(f"Watchdog: no progress for >{stall_seconds}s; reload attempt {reload_count}/{max_reload_attempts}...")
+            
             try:
                 driver.switch_to.default_content()
             except Exception:
                 pass
+            
+            # Clear browser cache/memory before reload to prevent resource accumulation
+            try:
+                driver.execute_script("window.localStorage.clear();")
+                driver.execute_script("window.sessionStorage.clear();")
+            except Exception:
+                pass
+            
+            # Add delay to allow cleanup
+            time.sleep(2)
+            
             try:
                 driver.refresh()
                 WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
@@ -421,10 +442,16 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                     WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
                 except Exception as e2:
                     logging.error(f"Navigate to URL also failed: {e2}")
+            
             # Re-run play + fullscreen sequence
             ok = _play_and_fullscreen()
             if not ok:
                 logging.warning("Watchdog: reinit failed; will keep monitoring")
+            else:
+                # Reset reload counter on successful recovery
+                reload_count = 0
+                logging.info("Watchdog: recovery successful, reset reload counter")
+            
             # Reset progress timers regardless
             last_progress_ts = time.time()
             try:

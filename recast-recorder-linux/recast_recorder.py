@@ -512,6 +512,22 @@ def test_recording_stop():
             except Exception:
                 pass
         
+        # Stop browser controller process
+        sess = browser_sessions.get(DEFAULT_SESSION_NAME)
+        if sess:
+            cproc = sess.get('controller_proc')
+            if cproc and cproc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(cproc.pid), signal.SIGTERM)
+                    cproc.wait(timeout=5)
+                    logger.info("Test browser controller stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping test browser controller: {e}")
+                    try:
+                        cproc.kill()
+                    except Exception:
+                        pass
+        
         elapsed = int(time.time() - test_recording_start_time) if test_recording_start_time else 0
         controller = test_recording_controller
         
@@ -2538,7 +2554,9 @@ def cleanup_recording():
 
 def execute_recording_job(job):
     """Execute a recording job."""
-    global current_job
+    global current_job, test_recording_active, test_recording_controller, test_recording_start_time
+    global ffmpeg_process, parec_process
+    
     current_job = job
     
     job_id = job['id']
@@ -2547,6 +2565,40 @@ def execute_recording_job(job):
     browser_controller = job.get('browser_controller', 'generic')
     
     logger.info(f"Starting job {job_id}: {url} ({duration_seconds}s) with {browser_controller} controller")
+    
+    # Clean up any existing test sessions before starting job
+    if test_recording_active:
+        logger.warning("Test recording active when job picked up - stopping it first")
+        try:
+            # Stop FFmpeg
+            if ffmpeg_process and ffmpeg_process.poll() is None:
+                ffmpeg_process.send_signal(signal.SIGINT)
+                try:
+                    ffmpeg_process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    ffmpeg_process.kill()
+            # Stop parec
+            if parec_process and parec_process.poll() is None:
+                try:
+                    parec_process.terminate()
+                    parec_process.wait(timeout=5)
+                except Exception:
+                    pass
+            # Reset test recording state
+            test_recording_active = False
+            test_recording_controller = None
+            test_recording_start_time = None
+            logger.info("Test recording stopped to make way for scheduled job")
+        except Exception as e:
+            logger.warning(f"Error stopping test recording: {e}")
+    
+    # Clean up any existing browser sessions
+    try:
+        _cleanup_browser_session()
+        logger.info("Cleaned up existing browser session before job start")
+    except Exception as e:
+        logger.warning(f"Error cleaning up browser session: {e}")
+    
     update_job_status(job_id, 'RECORDING')
     try:
         send_heartbeat('RECORDING', job_id)
