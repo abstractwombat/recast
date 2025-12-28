@@ -260,20 +260,32 @@ def update_config():
     global NVENC_PRESET, NVENC_RC, NVENC_TUNE, NVENC_CQ, NVENC_PROFILE
     global NVENC_BFRAMES, NVENC_LOOKAHEAD, NVENC_SPATIAL_AQ, NVENC_TEMPORAL_AQ, NVENC_AQ_STRENGTH
     global AUDIO_BITRATE_K, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
+    global INPUT_FRAMERATE, OUTPUT_FRAMERATE
     
     try:
         payload = request.get_json(silent=True) or {}
         full_config = config.get_full_config()
         
+        # Track if settings changed that require controller restart
+        warnings = []
+        old_width = full_config['recording'].get('screen_width')
+        old_height = full_config['recording'].get('screen_height')
+        
         # Update recording section
         if 'recording' in payload:
             rec = payload['recording']
-            for key in ['screen_width', 'screen_height', 'framerate', 'audio_source_name']:
+            for key in ['screen_width', 'screen_height', 'framerate', 'audio_source_name', 'input_framerate', 'output_framerate']:
                 if key in rec:
-                    if key in ['screen_width', 'screen_height', 'framerate']:
+                    if key in ['screen_width', 'screen_height', 'framerate', 'input_framerate', 'output_framerate']:
                         full_config['recording'][key] = int(rec[key])
                     else:
                         full_config['recording'][key] = str(rec[key])
+        
+        # Check if resolution changed
+        new_width = full_config['recording'].get('screen_width')
+        new_height = full_config['recording'].get('screen_height')
+        if (old_width != new_width or old_height != new_height):
+            warnings.append('Resolution changed - active browser sessions/controllers must be restarted for changes to take effect')
         
         # Update video section
         if 'video' in payload:
@@ -341,6 +353,9 @@ def update_config():
         AUDIO_SAMPLE_RATE = str(config.audio["sample_rate"])
         AUDIO_CHANNELS = str(config.audio["channels"])
         
+        INPUT_FRAMERATE = config.recording.get("input_framerate", 0)
+        OUTPUT_FRAMERATE = config.recording.get("output_framerate", 0)
+        
         logger.info("Config updated and saved to disk")
         
         return jsonify({
@@ -348,6 +363,7 @@ def update_config():
             'recording': config.recording,
             'video': config.video,
             'audio': config.audio,
+            'warnings': warnings,
         })
     except ImportError as e:
         logger.error(f"Failed to save config (missing tomli-w): {e}")

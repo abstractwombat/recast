@@ -200,6 +200,75 @@
             </select>
           </div>
         </div>
+
+        <!-- NVENC Section -->
+        <div class="settings-section" id="nvencSection" style="opacity: 0.5; pointer-events: none;">
+          <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">NVENC (NVIDIA)</h3>
+          <div class="field">
+            <label for="nvenc_preset">Preset</label>
+            <select id="nvenc_preset">
+              <option value="p1">P1 (Fastest)</option>
+              <option value="p2">P2</option>
+              <option value="p3">P3</option>
+              <option value="p4">P4 (Balanced)</option>
+              <option value="p5">P5</option>
+              <option value="p6">P6</option>
+              <option value="p7">P7 (Slowest)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nvenc_rc">Rate Control</label>
+            <select id="nvenc_rc">
+              <option value="vbr">VBR (Variable Bitrate)</option>
+              <option value="cbr">CBR (Constant Bitrate)</option>
+              <option value="constqp">Constant QP</option>
+              <option value="vbr_hq">VBR HQ</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nvenc_tune">Tune</label>
+            <select id="nvenc_tune">
+              <option value="">(None)</option>
+              <option value="hq">High Quality</option>
+              <option value="ll">Low Latency</option>
+              <option value="ull">Ultra Low Latency</option>
+              <option value="lossless">Lossless</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nvenc_cq">CQ Level (0=auto)</label>
+            <input type="number" id="nvenc_cq" min="0" max="51" step="1" />
+          </div>
+          <div class="field">
+            <label for="nvenc_profile">Profile</label>
+            <select id="nvenc_profile">
+              <option value="">(Auto)</option>
+              <option value="baseline">Baseline</option>
+              <option value="main">Main</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nvenc_bframes">B-Frames (0=auto)</label>
+            <input type="number" id="nvenc_bframes" min="0" max="4" step="1" />
+          </div>
+          <div class="field">
+            <label for="nvenc_lookahead">Lookahead (0=off)</label>
+            <input type="number" id="nvenc_lookahead" min="0" max="32" step="1" />
+          </div>
+          <div class="field">
+            <label for="nvenc_spatial_aq">Spatial AQ (0=off, 1=on)</label>
+            <input type="number" id="nvenc_spatial_aq" min="0" max="1" step="1" />
+          </div>
+          <div class="field">
+            <label for="nvenc_temporal_aq">Temporal AQ (0=off, 1=on)</label>
+            <input type="number" id="nvenc_temporal_aq" min="0" max="1" step="1" />
+          </div>
+          <div class="field">
+            <label for="nvenc_aq_strength">AQ Strength (0=auto, 1-15)</label>
+            <input type="number" id="nvenc_aq_strength" min="0" max="15" step="1" />
+          </div>
+        </div>
       </div>
 
       <div class="row" style="margin-top: 16px;">
@@ -472,6 +541,19 @@
     document.getElementById('btnStopController').addEventListener('click', stopController);
 
     // Config management
+    function updateNvencSectionState() {
+      const hwAccel = document.getElementById('hw_accel').value;
+      const nvencSection = document.getElementById('nvencSection');
+      
+      if (hwAccel === 'nvenc') {
+        nvencSection.style.opacity = '1';
+        nvencSection.style.pointerEvents = 'auto';
+      } else {
+        nvencSection.style.opacity = '0.5';
+        nvencSection.style.pointerEvents = 'none';
+      }
+    }
+    
     async function loadConfig() {
       const statusEl = document.getElementById('configStatus');
       try {
@@ -497,10 +579,25 @@
         document.getElementById('hls_time').value = data.video.hls_time || 5;
         document.getElementById('hw_accel').value = data.video.hw_accel || 'none';
         
+        // NVENC fields
+        document.getElementById('nvenc_preset').value = data.video.nvenc_preset || 'p4';
+        document.getElementById('nvenc_rc').value = data.video.nvenc_rc || 'vbr';
+        document.getElementById('nvenc_tune').value = data.video.nvenc_tune || '';
+        document.getElementById('nvenc_cq').value = data.video.nvenc_cq || 0;
+        document.getElementById('nvenc_profile').value = data.video.nvenc_profile || '';
+        document.getElementById('nvenc_bframes').value = data.video.nvenc_bframes || 0;
+        document.getElementById('nvenc_lookahead').value = data.video.nvenc_lookahead || 0;
+        document.getElementById('nvenc_spatial_aq').value = data.video.nvenc_spatial_aq || 0;
+        document.getElementById('nvenc_temporal_aq').value = data.video.nvenc_temporal_aq || 0;
+        document.getElementById('nvenc_aq_strength').value = data.video.nvenc_aq_strength || 0;
+        
         // Audio fields
         document.getElementById('bitrate_kbps').value = data.audio.bitrate_kbps || 192;
         document.getElementById('sample_rate').value = data.audio.sample_rate || 48000;
         document.getElementById('channels').value = data.audio.channels || 2;
+        
+        // Update NVENC section state
+        updateNvencSectionState();
         
         statusEl.textContent = 'Config loaded';
         statusEl.className = 'muted success';
@@ -534,6 +631,16 @@
           gop_multiplier: parseInt(document.getElementById('gop_multiplier').value, 10),
           hls_time: parseInt(document.getElementById('hls_time').value, 10),
           hw_accel: document.getElementById('hw_accel').value,
+          nvenc_preset: document.getElementById('nvenc_preset').value,
+          nvenc_rc: document.getElementById('nvenc_rc').value,
+          nvenc_tune: document.getElementById('nvenc_tune').value,
+          nvenc_cq: parseInt(document.getElementById('nvenc_cq').value, 10),
+          nvenc_profile: document.getElementById('nvenc_profile').value,
+          nvenc_bframes: parseInt(document.getElementById('nvenc_bframes').value, 10),
+          nvenc_lookahead: parseInt(document.getElementById('nvenc_lookahead').value, 10),
+          nvenc_spatial_aq: parseInt(document.getElementById('nvenc_spatial_aq').value, 10),
+          nvenc_temporal_aq: parseInt(document.getElementById('nvenc_temporal_aq').value, 10),
+          nvenc_aq_strength: parseInt(document.getElementById('nvenc_aq_strength').value, 10),
         },
         audio: {
           bitrate_kbps: parseInt(document.getElementById('bitrate_kbps').value, 10),
@@ -550,9 +657,14 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || 'Failed to save');
-        statusEl.textContent = 'Settings saved!';
+        
+        let msg = 'Settings saved!';
+        if (data.warnings && data.warnings.length > 0) {
+          msg += ' ⚠️ ' + data.warnings.join('; ');
+        }
+        statusEl.textContent = msg;
         statusEl.className = 'muted success';
-        setTimeout(() => { statusEl.textContent = ''; }, 3000);
+        setTimeout(() => { statusEl.textContent = ''; }, 5000);
       } catch (e) {
         statusEl.textContent = 'Error: ' + e.message;
         statusEl.className = 'muted error';
@@ -561,6 +673,9 @@
 
     document.getElementById('btnSaveConfig').addEventListener('click', saveConfig);
     document.getElementById('btnReloadConfig').addEventListener('click', loadConfig);
+    
+    // Update NVENC section when hardware acceleration changes
+    document.getElementById('hw_accel').addEventListener('change', updateNvencSectionState);
 
     // Test recording management
     // Note: test controller dropdown is now handled by updateSessionDisplay()
