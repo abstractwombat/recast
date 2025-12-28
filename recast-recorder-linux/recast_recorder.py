@@ -9,6 +9,7 @@ import time
 import subprocess
 import signal
 import socket
+import sys
 import logging
 import json
 import shutil
@@ -1548,7 +1549,7 @@ def register_recorder():
             return False
             
     except Exception as e:
-        logger.error(f"Error registering recorder: {e}")
+        logger.exception(f"Error registering recorder: {e}")
         return False
 
 def send_heartbeat(status='IDLE', current_job_id=None):
