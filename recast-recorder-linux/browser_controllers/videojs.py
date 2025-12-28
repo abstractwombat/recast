@@ -21,7 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='(Browser-VideoJS) %(levelname)s: %(message)s')
@@ -384,6 +384,15 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                 return driver.execute_script(
                     "return (function(){var v=document.querySelector('video'); if(!v) return {found:false}; return {found:true, ct:v.currentTime||0, rs:v.readyState||0, paused:!!v.paused, ended:!!v.ended};})()"
                 )
+            except WebDriverException as e:
+                # Check for tab crash
+                if 'tab crashed' in str(e).lower() or 'target closed' in str(e).lower():
+                    return { 'found': False, 'crashed': True }
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
+                return { 'found': False }
             except Exception:
                 try:
                     driver.switch_to.default_content()
@@ -391,9 +400,12 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                     pass
                 return { 'found': False }
 
-        def _recover_with_reload():
+        def _recover_with_reload(crashed=False):
             nonlocal last_progress_ts, last_ct
-            logging.warning(f"Watchdog: no progress for >{stall_seconds}s; reloading page and reinitializing player...")
+            if crashed:
+                logging.error("Watchdog: Chrome tab crashed! Reloading page and reinitializing player...")
+            else:
+                logging.warning(f"Watchdog: no progress for >{stall_seconds}s; reloading page and reinitializing player...")
             try:
                 driver.switch_to.default_content()
             except Exception:
@@ -401,8 +413,14 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
             try:
                 driver.refresh()
                 WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(f"Page refresh failed: {e}")
+                # If refresh fails due to crash, try navigating to URL again
+                try:
+                    driver.get(target_url)
+                    WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
+                except Exception as e2:
+                    logging.error(f"Navigate to URL also failed: {e2}")
             # Re-run play + fullscreen sequence
             ok = _play_and_fullscreen()
             if not ok:
@@ -429,6 +447,13 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
             time.sleep(max(1, poll_seconds))
             now = time.time()
             m = _get_video_metrics()
+            
+            # Check for crash
+            if m and m.get('crashed'):
+                logging.error("Chrome tab crash detected!")
+                _recover_with_reload(crashed=True)
+                continue
+            
             if not m or not m.get('found'):
                 # If no video element, treat as stalled
                 if now - last_progress_ts >= stall_seconds:
