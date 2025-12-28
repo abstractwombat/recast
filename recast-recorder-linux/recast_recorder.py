@@ -236,14 +236,16 @@ def control_page():
 
 @stream_app.route('/api/config', methods=['GET'])
 def get_config():
-    """Get current recorder configuration (recording, video, audio sections)."""
+    """Get current recorder configuration (all sections)."""
     try:
         full_config = config.get_full_config()
         return jsonify({
             'status': 'success',
+            'recorder': full_config['recorder'],
             'recording': full_config['recording'],
             'video': full_config['video'],
             'audio': full_config['audio'],
+            'paths': full_config['paths'],
         })
     except Exception as e:
         logger.error(f"Failed to get config: {e}")
@@ -261,6 +263,8 @@ def update_config():
     global NVENC_BFRAMES, NVENC_LOOKAHEAD, NVENC_SPATIAL_AQ, NVENC_TEMPORAL_AQ, NVENC_AQ_STRENGTH
     global AUDIO_BITRATE_K, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
     global INPUT_FRAMERATE, OUTPUT_FRAMERATE
+    global RECORDER_ID, MANAGEMENT_SERVER_URL, RECORDER_HOSTNAME, POLL_INTERVAL, HEARTBEAT_INTERVAL
+    global OUTPUT_DIR, CHROME_PROFILES_BASE_DIR
     
     try:
         payload = request.get_json(silent=True) or {}
@@ -271,15 +275,14 @@ def update_config():
         old_width = full_config['recording'].get('screen_width')
         old_height = full_config['recording'].get('screen_height')
         
-        # Update recording section
+        # Update recording section (only update provided fields, preserve others)
         if 'recording' in payload:
             rec = payload['recording']
-            for key in ['screen_width', 'screen_height', 'framerate', 'audio_source_name', 'input_framerate', 'output_framerate']:
-                if key in rec:
-                    if key in ['screen_width', 'screen_height', 'framerate', 'input_framerate', 'output_framerate']:
-                        full_config['recording'][key] = int(rec[key])
-                    else:
-                        full_config['recording'][key] = str(rec[key])
+            for key, value in rec.items():
+                if key in ['screen_width', 'screen_height', 'framerate', 'input_framerate', 'output_framerate']:
+                    full_config['recording'][key] = int(value)
+                else:
+                    full_config['recording'][key] = str(value)
         
         # Check if resolution changed
         new_width = full_config['recording'].get('screen_width')
@@ -287,28 +290,36 @@ def update_config():
         if (old_width != new_width or old_height != new_height):
             warnings.append('Resolution changed - active browser sessions/controllers must be restarted for changes to take effect')
         
-        # Update video section
+        # Update video section (only update provided fields, preserve others)
         if 'video' in payload:
             vid = payload['video']
-            for key in ['preset', 'crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 
-                        'pix_fmt', 'profile', 'gop_multiplier', 'gop_seconds',
-                        'hls_time', 'hls_list_size', 'hls_flags', 'hls_playlist_type',
-                        'fps_mode', 'hw_accel',
-                        'nvenc_preset', 'nvenc_rc', 'nvenc_tune', 'nvenc_cq', 'nvenc_profile',
-                        'nvenc_bframes', 'nvenc_lookahead', 'nvenc_spatial_aq', 'nvenc_temporal_aq', 'nvenc_aq_strength']:
-                if key in vid:
-                    if key in ['crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 'gop_multiplier', 'gop_seconds', 'hls_time', 'hls_list_size',
-                               'nvenc_cq', 'nvenc_bframes', 'nvenc_lookahead', 'nvenc_spatial_aq', 'nvenc_temporal_aq', 'nvenc_aq_strength']:
-                        full_config['video'][key] = int(vid[key])
-                    else:
-                        full_config['video'][key] = str(vid[key])
+            for key, value in vid.items():
+                if key in ['crf', 'maxrate_kbps', 'bufsize_kbps', 'threads', 'gop_multiplier', 'gop_seconds', 'hls_time', 'hls_list_size',
+                           'nvenc_cq', 'nvenc_bframes', 'nvenc_lookahead', 'nvenc_spatial_aq', 'nvenc_temporal_aq', 'nvenc_aq_strength']:
+                    full_config['video'][key] = int(value)
+                else:
+                    full_config['video'][key] = str(value)
         
-        # Update audio section
+        # Update audio section (only update provided fields, preserve others)
         if 'audio' in payload:
             aud = payload['audio']
-            for key in ['bitrate_kbps', 'sample_rate', 'channels']:
-                if key in aud:
-                    full_config['audio'][key] = int(aud[key])
+            for key, value in aud.items():
+                full_config['audio'][key] = int(value)
+        
+        # Update recorder section (only update provided fields, preserve others)
+        if 'recorder' in payload:
+            rec = payload['recorder']
+            for key, value in rec.items():
+                if key in ['poll_interval', 'heartbeat_interval']:
+                    full_config['recorder'][key] = int(value)
+                else:
+                    full_config['recorder'][key] = str(value)
+        
+        # Update paths section (only update provided fields, preserve others)
+        if 'paths' in payload:
+            pth = payload['paths']
+            for key, value in pth.items():
+                full_config['paths'][key] = str(value)
         
         # Save to disk
         config.save_config(full_config)
@@ -356,13 +367,26 @@ def update_config():
         INPUT_FRAMERATE = config.recording.get("input_framerate", 0)
         OUTPUT_FRAMERATE = config.recording.get("output_framerate", 0)
         
+        # Update recorder globals
+        RECORDER_ID = config.recorder["id"]
+        MANAGEMENT_SERVER_URL = config.recorder["management_server_url"]
+        RECORDER_HOSTNAME = config.recorder["hostname"]
+        POLL_INTERVAL = config.recorder["poll_interval"]
+        HEARTBEAT_INTERVAL = config.recorder["heartbeat_interval"]
+        
+        # Update paths globals
+        OUTPUT_DIR = Path(config.paths["output_dir"])
+        CHROME_PROFILES_BASE_DIR = config.paths["chrome_profiles_dir"]
+        
         logger.info("Config updated and saved to disk")
         
         return jsonify({
             'status': 'success',
+            'recorder': config.recorder,
             'recording': config.recording,
             'video': config.video,
             'audio': config.audio,
+            'paths': config.paths,
             'warnings': warnings,
         })
     except ImportError as e:
