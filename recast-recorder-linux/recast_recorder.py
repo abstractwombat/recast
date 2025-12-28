@@ -19,7 +19,6 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import threading
-
 import config
 
 # Configuration from config.toml
