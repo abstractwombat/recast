@@ -2614,9 +2614,21 @@ def execute_recording_job(job):
         os.environ['DISPLAY'] = display_name
         logger.info(f"Virtual display started: {display_name}")
         
+        # Store display in browser_sessions so cleanup can find it
+        browser_sessions[DEFAULT_SESSION_NAME] = {
+            'display': display_name,
+            'display_obj': display,
+            'vnc_proc': None,
+            'vnc_port': None,
+            'controller': browser_controller,
+            'controller_proc': None,
+        }
+        
         # Start VNC server for remote viewing/control
         v = start_vnc_server(display_name)
         controller_vnc[browser_controller] = {'display': display_name, 'process': v}
+        # Update VNC info in session
+        browser_sessions[DEFAULT_SESSION_NAME]['vnc_proc'] = v
         
         # Start browser with specified controller
         if not start_browser(url, display_name, browser_controller):
@@ -2966,12 +2978,35 @@ def start_pipewire():
         logger.warning(f"Failed to start PipeWire: {e}")
         return False
 
+def cleanup_orphaned_displays():
+    """Kill any orphaned Xvfb processes from previous runs."""
+    try:
+        # Find all Xvfb processes
+        result = subprocess.run(['pgrep', '-f', 'Xvfb'], capture_output=True, text=True)
+        if result.returncode == 0:
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        subprocess.run(['kill', pid], timeout=5)
+                        logger.info(f"Killed orphaned Xvfb process: {pid}")
+                    except Exception as e:
+                        logger.warning(f"Failed to kill Xvfb process {pid}: {e}")
+            logger.info(f"Cleaned up {len([p for p in pids if p])} orphaned Xvfb processes")
+        else:
+            logger.info("No orphaned Xvfb processes found")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup orphaned displays: {e}")
+
 if __name__ == '__main__':
     import threading
     
     logger.info(f"Starting Recast Recorder: {RECORDER_ID}")
     logger.info(f"Management Server: {MANAGEMENT_SERVER_URL}")
     logger.info(f"Hostname: {RECORDER_HOSTNAME}")
+    
+    # Clean up any orphaned Xvfb displays from previous runs
+    cleanup_orphaned_displays()
     
     # Start PipeWire for audio
     start_pipewire()
