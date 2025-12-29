@@ -422,11 +422,11 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                 pass
             
             # Clear browser cache/memory before reload to prevent resource accumulation
-            try:
-                driver.execute_script("window.localStorage.clear();")
-                driver.execute_script("window.sessionStorage.clear();")
-            except Exception:
-                pass
+            # try:
+            #     driver.execute_script("window.localStorage.clear();")
+            #     driver.execute_script("window.sessionStorage.clear();")
+            # except Exception:
+            #     pass
             
             # Add delay to allow cleanup
             time.sleep(2)
