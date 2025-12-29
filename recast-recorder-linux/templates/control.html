@@ -167,6 +167,14 @@
             <label for="audio_source_name">Audio Source</label>
             <input type="text" id="audio_source_name" placeholder="virtsink.monitor" />
           </div>
+          <div class="field">
+            <label for="video_thread_queue_size">Video Thread Queue Size</label>
+            <input type="number" id="video_thread_queue_size" min="1024" max="16384" step="1024" />
+          </div>
+          <div class="field">
+            <label for="audio_thread_queue_size">Audio Thread Queue Size</label>
+            <input type="number" id="audio_thread_queue_size" min="1024" max="16384" step="1024" />
+          </div>
         </div>
 
         <!-- Video Section -->
@@ -655,6 +663,8 @@
         document.getElementById('input_framerate').value = data.recording.input_framerate || 0;
         document.getElementById('output_framerate').value = data.recording.output_framerate || 0;
         document.getElementById('audio_source_name').value = data.recording.audio_source_name || '';
+        document.getElementById('video_thread_queue_size').value = data.recording.video_thread_queue_size || 8192;
+        document.getElementById('audio_thread_queue_size').value = data.recording.audio_thread_queue_size || 4096;
         
         // Video fields
         document.getElementById('preset').value = data.video.preset || 'ultrafast';
@@ -715,6 +725,8 @@
           input_framerate: parseInt(document.getElementById('input_framerate').value, 10),
           output_framerate: parseInt(document.getElementById('output_framerate').value, 10),
           audio_source_name: document.getElementById('audio_source_name').value,
+          video_thread_queue_size: parseInt(document.getElementById('video_thread_queue_size').value, 10),
+          audio_thread_queue_size: parseInt(document.getElementById('audio_thread_queue_size').value, 10),
         },
         video: {
           preset: document.getElementById('preset').value,

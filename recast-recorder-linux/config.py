@@ -68,6 +68,8 @@ def _apply_defaults(config: dict) -> dict:
             "screen_height": 1080,
             "framerate": 30,
             "audio_source_name": "virtsink.monitor",
+            "video_thread_queue_size": 8192,
+            "audio_thread_queue_size": 4096,
         },
         "video": {
             "preset": "ultrafast",

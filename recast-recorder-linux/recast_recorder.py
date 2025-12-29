@@ -33,6 +33,8 @@ SCREEN_WIDTH = config.recording["screen_width"]
 SCREEN_HEIGHT = config.recording["screen_height"]
 FRAMERATE = config.recording["framerate"]
 AUDIO_SOURCE_NAME = config.recording["audio_source_name"]
+VIDEO_THREAD_QUEUE_SIZE = config.recording.get("video_thread_queue_size", 8192)
+AUDIO_THREAD_QUEUE_SIZE = config.recording.get("audio_thread_queue_size", 4096)
 
 # Video encoding settings
 VIDEO_PRESET = config.video["preset"]
@@ -255,6 +257,7 @@ def get_config():
 def update_config():
     """Update recorder configuration and save to config.toml."""
     global SCREEN_WIDTH, SCREEN_HEIGHT, FRAMERATE, AUDIO_SOURCE_NAME
+    global VIDEO_THREAD_QUEUE_SIZE, AUDIO_THREAD_QUEUE_SIZE
     global VIDEO_PRESET, VIDEO_CRF, VIDEO_MAXRATE_K, VIDEO_BUFSIZE_K
     global VIDEO_THREADS, VIDEO_PIX_FMT, VIDEO_PROFILE, GOP_MULT, HLS_TIME
     global VIDEO_HW_ACCEL
@@ -279,7 +282,7 @@ def update_config():
         if 'recording' in payload:
             rec = payload['recording']
             for key, value in rec.items():
-                if key in ['screen_width', 'screen_height', 'framerate', 'input_framerate', 'output_framerate']:
+                if key in ['screen_width', 'screen_height', 'framerate', 'input_framerate', 'output_framerate', 'video_thread_queue_size', 'audio_thread_queue_size']:
                     full_config['recording'][key] = int(value)
                 else:
                     full_config['recording'][key] = str(value)
@@ -332,6 +335,8 @@ def update_config():
         SCREEN_HEIGHT = config.recording["screen_height"]
         FRAMERATE = config.recording["framerate"]
         AUDIO_SOURCE_NAME = config.recording["audio_source_name"]
+        VIDEO_THREAD_QUEUE_SIZE = config.recording.get("video_thread_queue_size", 8192)
+        AUDIO_THREAD_QUEUE_SIZE = config.recording.get("audio_thread_queue_size", 4096)
         
         VIDEO_PRESET = config.video["preset"]
         VIDEO_CRF = config.video["crf"]
@@ -2058,7 +2063,7 @@ def start_ffmpeg_recording(display):
 
         # --- VIDEO INPUT ---
         '-f', 'x11grab',
-        '-thread_queue_size', '1024',
+        '-thread_queue_size', str(VIDEO_THREAD_QUEUE_SIZE),
         '-video_size', f'{SCREEN_WIDTH}x{SCREEN_HEIGHT}',
         '-framerate', str(capture_fps),
         '-i', display,
@@ -2069,7 +2074,7 @@ def start_ffmpeg_recording(display):
         # Pulse/pipewire audio source
         command += [
             '-f', 'pulse',
-            '-thread_queue_size', '4096',
+            '-thread_queue_size', str(AUDIO_THREAD_QUEUE_SIZE),
             '-i', audio_source,
         ]
         used_pulse_audio = True
@@ -2148,11 +2153,11 @@ def start_ffmpeg_recording(display):
                     default_cmd = [
                         'ffmpeg', '-y',
                         '-f', 'x11grab',
-                        '-thread_queue_size', '1024',
+                        '-thread_queue_size', str(VIDEO_THREAD_QUEUE_SIZE),
                         '-video_size', f'{SCREEN_WIDTH}x{SCREEN_HEIGHT}',
                         '-framerate', str(capture_fps),
                         '-i', display,
-                        '-f', 'pulse', '-thread_queue_size', '4096', '-i', 'default',
+                        '-f', 'pulse', '-thread_queue_size', str(AUDIO_THREAD_QUEUE_SIZE), '-i', 'default',
                         '-fps_mode', FPS_MODE,
                     ] + video_enc_opts + [
                         '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
@@ -2191,7 +2196,7 @@ def start_ffmpeg_recording(display):
                         # Build ffmpeg command to read raw PCM from FIFO
                         fifo_cmd = [
                             'ffmpeg', '-y',
-                            '-f', 'x11grab', '-thread_queue_size', '1024',
+                            '-f', 'x11grab', '-thread_queue_size', str(VIDEO_THREAD_QUEUE_SIZE),
                             '-video_size', f'{SCREEN_WIDTH}x{SCREEN_HEIGHT}',
                             '-framerate', str(FRAMERATE),
                             '-i', display,
@@ -2254,7 +2259,7 @@ def start_ffmpeg_recording(display):
                 fallback_cmd = [
                     'ffmpeg', '-y',
                     '-f', 'x11grab',
-                    '-thread_queue_size', '1024',
+                    '-thread_queue_size', str(VIDEO_THREAD_QUEUE_SIZE),
                     '-video_size', f'{SCREEN_WIDTH}x{SCREEN_HEIGHT}',
                     '-framerate', str(FRAMERATE),
                     '-i', display,
