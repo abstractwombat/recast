@@ -7,6 +7,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="/opt/recast"
 
+# Stop service if running
+echo "Stopping service..."
+systemctl stop recast-recorder.service
+
 echo "Deploying from $SCRIPT_DIR to $DEST_DIR..."
 
 # Create destination if needed
@@ -27,11 +31,13 @@ cp -r "$SCRIPT_DIR/templates/"* "$DEST_DIR/templates/"
 cp "$SCRIPT_DIR/recast-recorder.service" "$DEST_DIR/"
 
 # Set ownership (exclude problematic cache/fuse directories)
+echo "Setting file ownership..."
 find "$DEST_DIR" -path "$DEST_DIR/.cache" -prune -o -print0 | xargs -0 chown recast:recast 2>/dev/null || true
 
 echo "Deployment complete. Files copied to $DEST_DIR"
 ls -la "$DEST_DIR"
 
+# Restart service
 echo "Restarting service..."
 systemctl daemon-reload
-systemctl restart recast-recorder.service
+systemctl start recast-recorder.service
