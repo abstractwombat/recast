@@ -62,7 +62,12 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
     chrome_options.add_argument('--hide-crash-restore-bubble')
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_argument(f"--display={display_env}")
-
+    chrome_options.add_argument("--disable-gpu-vsync")
+    chrome_options.add_argument("--disable-frame-rate-limit")
+    chrome_options.add_argument("--disable-background-timer-throttling")
+    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+    chrome_options.add_argument("--disable-renderer-backgrounding")
+    
     # Persistent user data dir to keep login cookies/sessions
     user_data_dir = os.environ.get('CHROME_USER_DATA_DIR')
     if not user_data_dir:
