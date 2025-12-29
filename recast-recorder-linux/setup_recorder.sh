@@ -98,6 +98,8 @@ fi
 echo ""
 echo "Step 1: Creating recast user..."
 sudo useradd -r -s /bin/bash -d /opt/recast -m recast 2>/dev/null || echo "User already exists"
+sudo usermod -aG video recast
+echo "Added recast user to video group"
 
 echo ""
 echo "Step 2: Installing system packages..."
@@ -108,6 +110,7 @@ sudo apt install -y \
     xvfb \
     xauth \
     x11vnc \
+    xserver-xorg-video-dummy \
     pipewire pipewire-pulse wireplumber pulseaudio-utils
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
     sudo apt install -y chromium || sudo apt install -y chromium-browser || (command -v snap >/dev/null 2>&1 && sudo snap install chromium) || echo "Warning: Chromium installation failed; please install Chromium manually"
@@ -164,7 +167,56 @@ sudo sed -i "s|^hostname = .*|hostname = \"$RECORDER_HOSTNAME\"|" "$CONFIG_FILE"
 sudo sed -i "s|^management_server_url = .*|management_server_url = \"http://$MANAGER_HOSTNAME:5000\"|" "$CONFIG_FILE"
 
 echo ""
-echo "Step 8: Installing project files and systemd service..."
+echo "Step 8: Configuring Xorg dummy driver for virtual display..."
+sudo mkdir -p /etc/X11/xorg.conf.d
+
+# Create the Xorg dummy driver configuration for proper 60Hz refresh rate
+sudo tee /etc/X11/xorg.conf.d/10-dummy.conf > /dev/null << 'XORGCONF'
+Section "Device"
+    Identifier  "DummyDevice"
+    Driver      "dummy"
+    VideoRam    256000
+EndSection
+
+Section "Monitor"
+    Identifier  "DummyMonitor"
+    HorizSync   28.0-80.0
+    VertRefresh 48.0-75.0
+    # 1920x1080 @ 60Hz modeline
+    Modeline "1920x1080_60" 148.50 1920 2008 2052 2200 1080 1084 1089 1125 +hsync +vsync
+    # 1080x1920 @ 60Hz modeline (portrait mode for vertical video)
+    Modeline "1080x1920_60" 148.50 1080 1168 1212 1344 1920 1924 1929 1965 +hsync +vsync
+EndSection
+
+Section "Screen"
+    Identifier  "DummyScreen"
+    Device      "DummyDevice"
+    Monitor     "DummyMonitor"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1920x1080_60" "1080x1920_60"
+    EndSubSection
+EndSection
+
+Section "ServerLayout"
+    Identifier  "DummyLayout"
+    Screen      "DummyScreen"
+EndSection
+XORGCONF
+
+echo "Xorg dummy driver configuration created at /etc/X11/xorg.conf.d/10-dummy.conf"
+
+# Configure Xwrapper to allow non-root users to start Xorg
+if [ -f /etc/X11/Xwrapper.config ]; then
+    sudo sed -i 's/^allowed_users=.*/allowed_users=anybody/' /etc/X11/Xwrapper.config
+else
+    echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config > /dev/null
+fi
+echo "Configured Xwrapper to allow recast user to start Xorg"
+
+echo ""
+echo "Step 9: Installing project files and systemd service..."
 sudo cp "$SCRIPT_DIR"/*.py /opt/recast/
 sudo cp -r "$SCRIPT_DIR/browser_controllers" /opt/recast/
 sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/

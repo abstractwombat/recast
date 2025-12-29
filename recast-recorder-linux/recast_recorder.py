@@ -721,12 +721,25 @@ def session_launch():
             sess['vnc_proc'] = vnc_proc
         return jsonify({'status': 'success', 'display': disp})
 
-    # Start new session: Xvfb + Browser + VNC
+    # Start new session: Xorg (preferred) or Xvfb (fallback) + Browser + VNC
     try:
-        from pyvirtualdisplay import Display
-        display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
-        display.start()
-        display_name = f":{display.display}"
+        display_name = None
+        xorg_process = None
+        pyvd_display = None
+        
+        # Try Xorg with dummy driver first for proper 60Hz refresh rate
+        display_name, xorg_process = start_xorg_display(SCREEN_WIDTH, SCREEN_HEIGHT)
+        
+        if display_name is None:
+            # Fall back to Xvfb via pyvirtualdisplay
+            logger.info("Falling back to Xvfb (no 60Hz support)")
+            from pyvirtualdisplay import Display
+            pyvd_display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
+            pyvd_display.start()
+            display_name = f":{pyvd_display.display}"
+        else:
+            logger.info(f"Using Xorg with dummy driver on {display_name} (60Hz enabled)")
+        
         # Ensure this process (and children) have DISPLAY set for any utilities that may inherit
         os.environ['DISPLAY'] = display_name
         # Build environment similar to start_browser
@@ -921,7 +934,8 @@ while True:
 
         controller_sessions[controller] = {
             'display': display_name,
-            'display_obj': display,
+            'display_obj': pyvd_display,  # Will be None if using Xorg
+            'xorg_proc': xorg_process,    # Will be None if using Xvfb
             'browser_proc': bproc,
             'vnc_proc': vnc_proc,
             'vnc_port': vnc_port,
@@ -959,11 +973,23 @@ def session_stop():
             bproc.wait(timeout=5)
         except Exception:
             pass
-    # Stop display
+    # Stop display (Xorg or Xvfb)
+    try:
+        xorg_proc = sess.get('xorg_proc')
+        if xorg_proc and xorg_proc.poll() is None:
+            xorg_proc.terminate()
+            try:
+                xorg_proc.wait(timeout=5)
+            except Exception:
+                xorg_proc.kill()
+            logger.info("Xorg display stopped")
+    except Exception:
+        pass
     try:
         disp = sess.get('display_obj')
         if disp:
             disp.stop()
+            logger.info("Xvfb display stopped")
     except Exception:
         pass
     # Cleanup
@@ -993,29 +1019,45 @@ def _get_or_create_session():
     """Get the single browser session, creating it if needed.
     
     This only creates the virtual display. The browser is started by the controller.
+    Uses Xorg with dummy driver for proper 60Hz refresh rate, falling back to Xvfb.
     """
     global browser_sessions
     
     sess = browser_sessions.get(DEFAULT_SESSION_NAME)
     if sess:
-        # Check if display is still valid
+        # Check if display is still valid (either Xorg or Xvfb)
+        xorg_proc = sess.get('xorg_proc')
         display_obj = sess.get('display_obj')
-        if display_obj and sess.get('display'):
+        if (xorg_proc and xorg_proc.poll() is None) or (display_obj and sess.get('display')):
             return sess
         # Session died, clean it up
         _cleanup_browser_session()
     
-    # Create new session with virtual display only
+    # Create new session with virtual display
     try:
-        from pyvirtualdisplay import Display
-        display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
-        display.start()
-        display_name = f":{display.display}"
+        display_name = None
+        xorg_process = None
+        pyvd_display = None
+        
+        # Try Xorg with dummy driver first for proper 60Hz refresh rate
+        display_name, xorg_process = start_xorg_display(SCREEN_WIDTH, SCREEN_HEIGHT)
+        
+        if display_name is None:
+            # Fall back to Xvfb via pyvirtualdisplay
+            logger.info("Falling back to Xvfb for browser session (no 60Hz support)")
+            from pyvirtualdisplay import Display
+            pyvd_display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
+            pyvd_display.start()
+            display_name = f":{pyvd_display.display}"
+        else:
+            logger.info(f"Using Xorg with dummy driver on {display_name} for browser session (60Hz enabled)")
+        
         os.environ['DISPLAY'] = display_name
         
         browser_sessions[DEFAULT_SESSION_NAME] = {
             'display': display_name,
-            'display_obj': display,
+            'display_obj': pyvd_display,  # Will be None if using Xorg
+            'xorg_proc': xorg_process,    # Will be None if using Xvfb
             'vnc_proc': None,
             'vnc_port': None,
             'controller': None,
@@ -1052,11 +1094,23 @@ def _cleanup_browser_session():
         except Exception:
             pass
     
-    # Stop display
+    # Stop display (Xorg or Xvfb)
+    try:
+        xorg_proc = sess.get('xorg_proc')
+        if xorg_proc and xorg_proc.poll() is None:
+            xorg_proc.terminate()
+            try:
+                xorg_proc.wait(timeout=5)
+            except Exception:
+                xorg_proc.kill()
+            logger.info("Xorg display stopped")
+    except Exception:
+        pass
     try:
         disp = sess.get('display_obj')
         if disp:
             disp.stop()
+            logger.info("Xvfb display stopped")
     except Exception:
         pass
     
@@ -1784,6 +1838,108 @@ import {browser_controller}
     except Exception as e:
         logger.error(f"Failed to start browser: {e}")
         return None
+
+def find_free_display():
+    """Find a free X display number."""
+    for display_num in range(1, 100):
+        lock_file = Path(f'/tmp/.X{display_num}-lock')
+        socket_file = Path(f'/tmp/.X11-unix/X{display_num}')
+        if not lock_file.exists() and not socket_file.exists():
+            return display_num
+    raise RuntimeError("No free display number found")
+
+
+def start_xorg_display(width=1920, height=1080, display_num=None):
+    """Start Xorg with the dummy driver for proper 60Hz refresh rate.
+    
+    Returns (display_name, xorg_process) or raises an exception on failure.
+    """
+    if display_num is None:
+        display_num = find_free_display()
+    
+    display_name = f":{display_num}"
+    
+    # Determine the mode name based on resolution
+    if width == 1080 and height == 1920:
+        mode_name = "1080x1920_60"
+    else:
+        mode_name = "1920x1080_60"
+    
+    # Check if Xorg dummy config exists
+    xorg_config = Path('/etc/X11/xorg.conf.d/10-dummy.conf')
+    if not xorg_config.exists():
+        logger.warning("Xorg dummy config not found, falling back to Xvfb")
+        return None, None
+    
+    # Start Xorg with the dummy driver
+    xorg_log = TEMP_DIR / f'xorg_{display_num}.log'
+    
+    try:
+        # Use Xorg with the dummy driver configuration
+        xorg_cmd = [
+            'Xorg',
+            display_name,
+            '-config', '/etc/X11/xorg.conf.d/10-dummy.conf',
+            '-noreset',
+            '-logfile', str(xorg_log),
+        ]
+        
+        logger.info(f"Starting Xorg: {' '.join(xorg_cmd)}")
+        
+        xorg_process = subprocess.Popen(
+            xorg_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        # Wait for Xorg to start
+        time.sleep(2)
+        
+        if xorg_process.poll() is not None:
+            # Xorg exited, check log
+            if xorg_log.exists():
+                log_content = xorg_log.read_text()[-500:]
+                logger.error(f"Xorg failed to start. Log tail: {log_content}")
+            return None, None
+        
+        # Set the display mode using xrandr
+        env = os.environ.copy()
+        env['DISPLAY'] = display_name
+        
+        # Wait a bit more for Xorg to be fully ready
+        time.sleep(1)
+        
+        # Try to set the mode
+        try:
+            result = subprocess.run(
+                ['xrandr', '--output', 'default', '--mode', mode_name],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                # Try without specifying output
+                subprocess.run(
+                    ['xrandr', '-s', f'{width}x{height}'],
+                    env=env,
+                    capture_output=True,
+                    timeout=5
+                )
+        except Exception as e:
+            logger.warning(f"xrandr mode set failed (non-fatal): {e}")
+        
+        logger.info(f"Xorg started on display {display_name} with PID {xorg_process.pid}")
+        return display_name, xorg_process
+        
+    except FileNotFoundError:
+        logger.warning("Xorg not found, falling back to Xvfb")
+        return None, None
+    except Exception as e:
+        logger.error(f"Failed to start Xorg: {e}")
+        return None, None
+
 
 def get_audio_source():
     """Get available audio source, auto-detecting if needed."""
