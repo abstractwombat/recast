@@ -378,6 +378,10 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         poll_seconds = int(os.environ.get('VIDEOJS_WATCHDOG_POLL', '5'))
         max_reload_attempts = int(os.environ.get('VIDEOJS_MAX_RELOADS', '5'))
         reload_count = 0
+        
+        # Proactive refresh configuration (prevents memory buildup)
+        proactive_refresh_seconds = int(os.environ.get('VIDEOJS_PROACTIVE_REFRESH_MINUTES', '45')) * 60
+        last_refresh_ts = time.time()
 
         # Initialize progress tracking
         last_progress_ts = time.time()
@@ -407,14 +411,63 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                     pass
                 return { 'found': False }
 
+        def _restart_webdriver():
+            """Restart the entire WebDriver session when recovery via refresh fails."""
+            nonlocal driver, last_progress_ts, last_ct, reload_count, last_refresh_ts
+            
+            logging.warning("Restarting WebDriver session...")
+            
+            # Quit the old driver
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            
+            time.sleep(3)  # Allow cleanup
+            
+            # Create new driver with same options
+            try:
+                driver = webdriver.Chrome(options=chrome_options)
+                driver.get(target_url)
+                WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
+                
+                # Switch to video frame if needed
+                _switch_to_frame_with_video(driver)
+                
+                # Re-run play + fullscreen sequence
+                ok = _play_and_fullscreen()
+                if ok:
+                    logging.info("WebDriver restart successful, playback resumed.")
+                    reload_count = 0
+                else:
+                    logging.warning("WebDriver restart: play/fullscreen failed, will keep monitoring.")
+                
+                # Reset all timers
+                last_progress_ts = time.time()
+                last_refresh_ts = time.time()
+                try:
+                    m = _get_video_metrics()
+                    last_ct = float(m.get('ct', 0)) if m and m.get('found') else -1.0
+                except Exception:
+                    last_ct = -1.0
+                    
+                return True
+            except Exception as e:
+                logging.error(f"WebDriver restart failed: {e}")
+                return False
+
         def _recover_with_reload(crashed=False):
-            nonlocal last_progress_ts, last_ct, reload_count
+            nonlocal last_progress_ts, last_ct, reload_count, last_refresh_ts
             
             reload_count += 1
             if reload_count > max_reload_attempts:
-                error_msg = f"Max reload attempts ({max_reload_attempts}) reached. Video playback unrecoverable."
-                logging.error(error_msg)
-                raise Exception(error_msg)
+                logging.error(f"Max reload attempts ({max_reload_attempts}) reached. Attempting WebDriver restart...")
+                if _restart_webdriver():
+                    return  # Successfully restarted
+                else:
+                    error_msg = "WebDriver restart also failed. Video playback unrecoverable."
+                    logging.error(error_msg)
+                    raise Exception(error_msg)
             
             if crashed:
                 logging.error(f"Watchdog: Chrome tab crashed! Reload attempt {reload_count}/{max_reload_attempts}...")
@@ -425,13 +478,6 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                 driver.switch_to.default_content()
             except Exception:
                 pass
-            
-            # Clear browser cache/memory before reload to prevent resource accumulation
-            # try:
-            #     driver.execute_script("window.localStorage.clear();")
-            #     driver.execute_script("window.sessionStorage.clear();")
-            # except Exception:
-            #     pass
             
             # Add delay to allow cleanup
             time.sleep(2)
@@ -447,6 +493,12 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                     WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
                 except Exception as e2:
                     logging.error(f"Navigate to URL also failed: {e2}")
+                    # If both refresh and navigate fail, try WebDriver restart immediately
+                    if crashed:
+                        logging.warning("Tab crashed and navigation failed. Attempting WebDriver restart...")
+                        if _restart_webdriver():
+                            return
+                        # If restart fails, increment count and let next iteration try again
             
             # Re-run play + fullscreen sequence
             ok = _play_and_fullscreen()
@@ -455,6 +507,7 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
             else:
                 # Reset reload counter on successful recovery
                 reload_count = 0
+                last_refresh_ts = time.time()  # Reset proactive refresh timer too
                 logging.info("Watchdog: recovery successful, reset reload counter")
             
             # Reset progress timers regardless
@@ -474,10 +527,54 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         except Exception:
             pass
 
+        def _proactive_refresh():
+            """Proactively refresh the page to prevent memory buildup."""
+            nonlocal last_progress_ts, last_ct, last_refresh_ts
+            
+            logging.info(f"Proactive refresh triggered (every {proactive_refresh_seconds // 60} minutes) to prevent memory buildup...")
+            
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+            
+            try:
+                driver.refresh()
+                WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState==='complete'"))
+                
+                # Switch to video frame if needed
+                _switch_to_frame_with_video(driver)
+                
+                # Re-run play + fullscreen sequence
+                ok = _play_and_fullscreen()
+                if ok:
+                    logging.info("Proactive refresh successful, playback resumed.")
+                else:
+                    logging.warning("Proactive refresh: play/fullscreen failed, will keep monitoring.")
+                
+                # Reset timers
+                last_refresh_ts = time.time()
+                last_progress_ts = time.time()
+                try:
+                    m = _get_video_metrics()
+                    last_ct = float(m.get('ct', 0)) if m and m.get('found') else -1.0
+                except Exception:
+                    last_ct = -1.0
+                    
+            except Exception as e:
+                logging.warning(f"Proactive refresh failed: {e}. Will retry on next interval.")
+                last_refresh_ts = time.time()  # Reset timer to avoid rapid retries
+
         # Watchdog loop
         while True:
             time.sleep(max(1, poll_seconds))
             now = time.time()
+            
+            # Check for proactive refresh (memory leak prevention)
+            if now - last_refresh_ts >= proactive_refresh_seconds:
+                _proactive_refresh()
+                continue
+            
             m = _get_video_metrics()
             
             # Check for crash
