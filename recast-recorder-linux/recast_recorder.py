@@ -2521,7 +2521,8 @@ def convert_hls_to_mp4(output_filename, job_id):
             last_output = time.time()
             if line.startswith('out_time_ms='):
                 try:
-                    out_ms = int(line.split('=', 1)[1])
+                    out_us = int(line.split('=', 1)[1])
+                    out_ms = out_us // 1000 # Convert microseconds to milliseconds
                 except Exception:
                     out_ms = 0
                 # Compute progress from playlist duration if available
