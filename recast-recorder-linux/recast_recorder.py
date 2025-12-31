@@ -1210,12 +1210,14 @@ def browser_session_start_vnc():
         # Set HOME to a writable directory to avoid permission issues with subprocess
         os.environ['HOME'] = str(TEMP_DIR)
         
-        # Ensure Chrome profile directory exists
+        # Use videojs Chrome profile (same as automated recording)
+        # This allows manual setup via /control to configure the same session
+        controller_name = 'videojs'
         profiles_base = Path(CHROME_PROFILES_BASE_DIR)
         profiles_base.mkdir(parents=True, exist_ok=True)
-        session_profile = profiles_base / 'default_session'
-        session_profile.mkdir(parents=True, exist_ok=True)
-        default_profile = session_profile / 'Default'
+        controller_profile = profiles_base / controller_name
+        controller_profile.mkdir(parents=True, exist_ok=True)
+        default_profile = controller_profile / 'Default'
         default_profile.mkdir(parents=True, exist_ok=True)
         
         # Create browser launch script with error handling
@@ -1274,7 +1276,7 @@ except Exception as e:
         
         browser_env = os.environ.copy()
         browser_env['DISPLAY'] = display
-        browser_env['CHROME_USER_DATA_DIR'] = str(session_profile)
+        browser_env['CHROME_USER_DATA_DIR'] = str(controller_profile)
         browser_env['CHROME_PROFILE_DIR'] = 'Default'
         # Set HOME to a writable directory to avoid permission issues
         browser_env['HOME'] = str(TEMP_DIR)
@@ -1438,18 +1440,18 @@ except Exception as e:
             pass
         ctrl_env['SESSION_ERROR_FLAG'] = error_flag_path
         
-        # Use session's Chrome profile - ensure directory exists with proper permissions
+        # Use controller-specific Chrome profile (same as automated recording)
         try:
             profiles_base = Path(CHROME_PROFILES_BASE_DIR)
             profiles_base.mkdir(parents=True, exist_ok=True)
-            session_profile = profiles_base / 'default_session'
-            session_profile.mkdir(parents=True, exist_ok=True)
+            controller_profile = profiles_base / controller
+            controller_profile.mkdir(parents=True, exist_ok=True)
             # Create Default profile subdirectory
-            default_profile = session_profile / 'Default'
+            default_profile = controller_profile / 'Default'
             default_profile.mkdir(parents=True, exist_ok=True)
-            ctrl_env['CHROME_USER_DATA_DIR'] = str(session_profile)
+            ctrl_env['CHROME_USER_DATA_DIR'] = str(controller_profile)
             ctrl_env['CHROME_PROFILE_DIR'] = 'Default'
-            logger.info(f"Chrome profile directory: {session_profile}")
+            logger.info(f"Chrome profile directory for {controller}: {controller_profile}")
         except Exception as e:
             logger.warning(f"Failed to create Chrome profile directory: {e}")
         
