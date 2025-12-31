@@ -1241,11 +1241,12 @@ try:
     opts = Options()
     opts.add_argument("--window-size={SCREEN_WIDTH},{SCREEN_HEIGHT}")
     opts.add_argument("--window-position=0,0")
-    opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--no-default-browser-check")
     opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-gpu-vsync")
+    opts.add_argument("--disable-frame-rate-limit")
     if display_env:
         opts.add_argument("--display=" + str(display_env))
     opts.add_argument("--autoplay-policy=no-user-gesture-required")
