@@ -138,6 +138,18 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
     chrome_options.add_argument("--disable-backgrounding-occluded-windows")
     chrome_options.add_argument("--disable-renderer-backgrounding")
     
+    # NVIDIA doesn't support VAAPI, so disable hardware video decode in Chrome
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-accelerated-video-decode")
+    chrome_options.add_argument("--disable-gpu-compositing")
+    
+    # Renderer stability flags
+    chrome_options.add_argument("--disable-hang-monitor")
+    chrome_options.add_argument("--disable-breakpad")
+    chrome_options.add_argument("--disable-component-update")
+    chrome_options.add_argument("--disable-domain-reliability")
+    chrome_options.add_argument("--disable-client-side-phishing-detection")
+    
     # Persistent user data dir to keep login cookies/sessions
     user_data_dir = os.environ.get('CHROME_USER_DATA_DIR')
     if not user_data_dir:
