@@ -96,6 +96,32 @@ def _log_system_state(context=""):
     if chrome_mem:
         logging.info(f"{prefix}Chrome processes: {chrome_mem['process_count']}, total RSS: {chrome_mem['total_rss_mb']} MB")
 
+def _cleanup_stale_chrome_processes():
+    """Kill any stale Chrome/ChromeDriver processes that may interfere with a new session."""
+    try:
+        # Check for existing chrome processes
+        result = subprocess.run(['pgrep', '-f', 'chrome'], capture_output=True, text=True, timeout=5)
+        chrome_pids = [p for p in result.stdout.strip().split('\n') if p]
+        
+        if chrome_pids:
+            logging.warning(f"Found {len(chrome_pids)} stale Chrome process(es), killing them...")
+            subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, timeout=10)
+            time.sleep(1)
+        
+        # Check for existing chromedriver processes
+        result = subprocess.run(['pgrep', '-f', 'chromedriver'], capture_output=True, text=True, timeout=5)
+        driver_pids = [p for p in result.stdout.strip().split('\n') if p]
+        
+        if driver_pids:
+            logging.warning(f"Found {len(driver_pids)} stale ChromeDriver process(es), killing them...")
+            subprocess.run(['pkill', '-9', '-f', 'chromedriver'], capture_output=True, timeout=10)
+            time.sleep(1)
+        
+        if chrome_pids or driver_pids:
+            logging.info("Stale processes cleaned up successfully")
+    except Exception as e:
+        logging.warning(f"Failed to cleanup stale processes: {e}")
+
 def run_browser_session(target_url, screen_width, screen_height, ready_flag_path):
     """
     Sets up a Selenium browser session for VideoJS sites, signals readiness, and runs until terminated.
@@ -106,6 +132,9 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         screen_height: Screen height in pixels
         ready_flag_path: Path to create ready flag file
     """
+    
+    # Clean up any stale Chrome processes before starting
+    _cleanup_stale_chrome_processes()
     
     display_env = os.environ.get('DISPLAY')
     if not display_env:
@@ -137,11 +166,6 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
     chrome_options.add_argument("--disable-background-timer-throttling")
     chrome_options.add_argument("--disable-backgrounding-occluded-windows")
     chrome_options.add_argument("--disable-renderer-backgrounding")
-    
-    # NVIDIA doesn't support VAAPI, so disable hardware video decode in Chrome
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-accelerated-video-decode")
-    chrome_options.add_argument("--disable-gpu-compositing")
     
     # Renderer stability flags
     chrome_options.add_argument("--disable-hang-monitor")
@@ -462,7 +486,7 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         max_reload_attempts = int(os.environ.get('VIDEOJS_MAX_RELOADS', '5'))
         reload_count = 0
         
-        # Proactive refresh configuration (prevents memory buildup)
+        # Proactive refresh configuration (prevents memory buildup over long sessions)
         proactive_refresh_seconds = int(os.environ.get('VIDEOJS_PROACTIVE_REFRESH_MINUTES', '45')) * 60
         last_refresh_ts = time.time()
         
