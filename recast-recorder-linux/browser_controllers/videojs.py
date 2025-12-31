@@ -8,6 +8,7 @@ import time
 import sys
 import logging
 import traceback
+import subprocess
 
 # Disable MouseInfo before importing pyautogui (requires tkinter which may not be installed)
 sys.modules['mouseinfo'] = type(sys)('mouseinfo')
@@ -24,7 +25,76 @@ from selenium.webdriver import ActionChains
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format='(Browser-VideoJS) %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s (Browser-VideoJS) %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+def _get_system_memory_info():
+    """Get system memory usage for diagnostics."""
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].rstrip(':')
+                    value = int(parts[1])  # in kB
+                    meminfo[key] = value
+        
+        total_mb = meminfo.get('MemTotal', 0) // 1024
+        available_mb = meminfo.get('MemAvailable', 0) // 1024
+        used_mb = total_mb - available_mb
+        usage_pct = (used_mb / total_mb * 100) if total_mb > 0 else 0
+        
+        return {
+            'total_mb': total_mb,
+            'available_mb': available_mb,
+            'used_mb': used_mb,
+            'usage_pct': round(usage_pct, 1)
+        }
+    except Exception:
+        return None
+
+def _get_chrome_memory_usage():
+    """Get Chrome process memory usage."""
+    try:
+        result = subprocess.run(
+            ['pgrep', '-f', 'chrome'],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = result.stdout.strip().split('\n')
+        pids = [p for p in pids if p]
+        
+        if not pids:
+            return None
+        
+        total_rss_kb = 0
+        for pid in pids:
+            try:
+                with open(f'/proc/{pid}/status', 'r') as f:
+                    for line in f:
+                        if line.startswith('VmRSS:'):
+                            total_rss_kb += int(line.split()[1])
+                            break
+            except Exception:
+                pass
+        
+        return {
+            'process_count': len(pids),
+            'total_rss_mb': total_rss_kb // 1024
+        }
+    except Exception:
+        return None
+
+def _log_system_state(context=""):
+    """Log current system memory state for diagnostics."""
+    prefix = f"[{context}] " if context else ""
+    
+    sys_mem = _get_system_memory_info()
+    if sys_mem:
+        logging.info(f"{prefix}System memory: {sys_mem['used_mb']}/{sys_mem['total_mb']} MB used ({sys_mem['usage_pct']}%), {sys_mem['available_mb']} MB available")
+    
+    chrome_mem = _get_chrome_memory_usage()
+    if chrome_mem:
+        logging.info(f"{prefix}Chrome processes: {chrome_mem['process_count']}, total RSS: {chrome_mem['total_rss_mb']} MB")
 
 def run_browser_session(target_url, screen_width, screen_height, ready_flag_path):
     """
@@ -372,6 +442,7 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         logging.info(f"Synchronization flag '{ready_flag_path}' created. Recording should now start.")
         
         logging.info("Browser session active. Starting stall watchdog...")
+        _log_system_state("Session start")
 
         # Stall watchdog configuration
         stall_seconds = int(os.environ.get('VIDEOJS_STALL_SECONDS', '30'))
@@ -382,6 +453,10 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
         # Proactive refresh configuration (prevents memory buildup)
         proactive_refresh_seconds = int(os.environ.get('VIDEOJS_PROACTIVE_REFRESH_MINUTES', '45')) * 60
         last_refresh_ts = time.time()
+        
+        # Periodic memory logging interval (every 10 minutes)
+        memory_log_interval = 600
+        last_memory_log_ts = time.time()
 
         # Initialize progress tracking
         last_progress_ts = time.time()
@@ -416,6 +491,7 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
             nonlocal driver, last_progress_ts, last_ct, reload_count, last_refresh_ts
             
             logging.warning("Restarting WebDriver session...")
+            _log_system_state("Before WebDriver restart")
             
             # Quit the old driver
             try:
@@ -458,6 +534,9 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
 
         def _recover_with_reload(crashed=False):
             nonlocal last_progress_ts, last_ct, reload_count, last_refresh_ts
+            
+            # Log system state before recovery attempt
+            _log_system_state("Before recovery")
             
             reload_count += 1
             if reload_count > max_reload_attempts:
@@ -577,9 +656,16 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
             
             m = _get_video_metrics()
             
+            # Periodic memory logging (every 10 minutes)
+            if now - last_memory_log_ts >= memory_log_interval:
+                elapsed_minutes = int((now - last_refresh_ts) / 60)
+                _log_system_state(f"Periodic check, {elapsed_minutes}m since last refresh")
+                last_memory_log_ts = now
+            
             # Check for crash
             if m and m.get('crashed'):
                 logging.error("Chrome tab crash detected!")
+                _log_system_state("CRASH DETECTED")
                 _recover_with_reload(crashed=True)
                 continue
             
