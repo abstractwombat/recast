@@ -283,37 +283,67 @@ def run_browser_session(target_url, screen_width, screen_height, ready_flag_path
                 except TimeoutException:
                     logging.warning("Video did not report ready > 0; continuing anyway.")
 
-                # Try to enter fullscreen (hover to reveal controls)
+                # Enter fullscreen using native browser API on the video element directly
                 try:
+                    fullscreen_result = driver.execute_script("""
+                        (function() {
+                            var video = document.querySelector('video');
+                            if (!video) return 'no_video';
+                            
+                            // Try to fullscreen the video element directly
+                            if (video.requestFullscreen) {
+                                video.requestFullscreen();
+                                return 'success_standard';
+                            } else if (video.webkitRequestFullscreen) {
+                                video.webkitRequestFullscreen();
+                                return 'success_webkit';
+                            } else if (video.webkitEnterFullscreen) {
+                                // iOS Safari
+                                video.webkitEnterFullscreen();
+                                return 'success_webkit_enter';
+                            } else if (video.msRequestFullscreen) {
+                                video.msRequestFullscreen();
+                                return 'success_ms';
+                            }
+                            return 'no_api';
+                        })();
+                    """)
+                    logging.info(f"Native video fullscreen result: {fullscreen_result}")
+                    
+                    if fullscreen_result in ['no_video', 'no_api']:
+                        raise Exception(f"Native fullscreen failed: {fullscreen_result}")
+                        
+                except Exception as e:
+                    logging.warning(f"Native video fullscreen failed ({e}), trying document body fullscreen...")
+                    # Fallback: fullscreen the document body (fills screen but keeps page layout)
                     try:
-                        ActionChains(driver).move_to_element(video_container_element).perform()
-                        time.sleep(0.2)
-                    except Exception:
-                        pass
-                    FULLSCREEN_BUTTON_SELECTOR = "button.vjs-fullscreen-control, button[title*='Full'], button[aria-label*='Full']"
-                    fs_btn = WebDriverWait(driver, 3).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, FULLSCREEN_BUTTON_SELECTOR))
-                    )
-                    driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'center'});", fs_btn)
-                    fs_btn.click()
-                except Exception:
-                    # Fallbacks: keyboard 'f' then Fullscreen API then double-click
-                    try:
-                        driver.execute_script("arguments[0].focus();", video_container_element)
-                        time.sleep(0.05)
-                        video_container_element.send_keys('f')
-                    except Exception:
+                        driver.execute_script("""
+                            (function() {
+                                var body = document.body || document.documentElement;
+                                if (body.requestFullscreen) {
+                                    body.requestFullscreen();
+                                } else if (body.webkitRequestFullscreen) {
+                                    body.webkitRequestFullscreen();
+                                } else if (body.msRequestFullscreen) {
+                                    body.msRequestFullscreen();
+                                }
+                            })();
+                        """)
+                        logging.info("Document body fullscreen requested.")
+                    except Exception as e2:
+                        logging.warning(f"Document fullscreen also failed: {e2}")
+                        # Last resort: try the site's fullscreen button
                         try:
-                            driver.execute_script(
-                                "(function(){var el=document.querySelector('.video-js')||document.querySelector('video');if(!el)return false;var t=el.closest('.video-js')||el;if(t.requestFullscreen){t.requestFullscreen();return true;}if(t.webkitRequestFullscreen){t.webkitRequestFullscreen();return true;}if(t.msRequestFullscreen){t.msRequestFullscreen();return true;}return false;})()"
+                            ActionChains(driver).move_to_element(video_container_element).perform()
+                            time.sleep(0.2)
+                            FULLSCREEN_BUTTON_SELECTOR = "button.vjs-fullscreen-control, button[title*='Full'], button[aria-label*='Full']"
+                            fs_btn = WebDriverWait(driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, FULLSCREEN_BUTTON_SELECTOR))
                             )
+                            fs_btn.click()
+                            logging.info("Clicked site fullscreen button as last resort.")
                         except Exception:
-                            try:
-                                loc = video_container_element.location; sz = video_container_element.size
-                                cx = int(loc['x'] + sz['width']//2); cy = int(loc['y'] + sz['height']//2)
-                                pyautogui.moveTo(cx, cy); time.sleep(0.05); pyautogui.doubleClick(x=cx, y=cy)
-                            except Exception:
-                                pass
+                            pass
 
                 # Unmute and set volume
                 try:

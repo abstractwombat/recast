@@ -156,6 +156,57 @@ def get_local_ip():
             pass
     return ip
 
+# FFmpeg capture user for process isolation (hides FFmpeg from Chrome/Widevine DRM)
+FFMPEG_CAPTURE_USER = "ffmpeg_capture"
+
+def _check_ffmpeg_user_available():
+    """Check if ffmpeg_capture user exists and sudo is configured."""
+    try:
+        # Check if user exists
+        result = subprocess.run(['id', FFMPEG_CAPTURE_USER], capture_output=True, timeout=5)
+        if result.returncode != 0:
+            logger.warning(f"User '{FFMPEG_CAPTURE_USER}' does not exist. FFmpeg will run as current user.")
+            return False
+        
+        # Check if sudo is available for this user
+        result = subprocess.run(
+            ['sudo', '-n', '-u', FFMPEG_CAPTURE_USER, 'true'],
+            capture_output=True, timeout=5
+        )
+        if result.returncode != 0:
+            logger.warning(f"Cannot sudo to '{FFMPEG_CAPTURE_USER}'. FFmpeg will run as current user.")
+            return False
+        
+        # Grant X11 access to ffmpeg_capture user
+        try:
+            subprocess.run(
+                ['xhost', f'+SI:localuser:{FFMPEG_CAPTURE_USER}'],
+                capture_output=True, timeout=5
+            )
+            logger.info(f"Granted X11 access to '{FFMPEG_CAPTURE_USER}'")
+        except Exception as e:
+            logger.warning(f"Could not grant X11 access to '{FFMPEG_CAPTURE_USER}': {e}")
+        
+        logger.info(f"FFmpeg process isolation enabled: will run as '{FFMPEG_CAPTURE_USER}'")
+        return True
+    except Exception as e:
+        logger.warning(f"Error checking ffmpeg user: {e}. FFmpeg will run as current user.")
+        return False
+
+def _wrap_ffmpeg_command(cmd):
+    """
+    Wrap an FFmpeg command to run as the ffmpeg_capture user if available.
+    This hides FFmpeg from Chrome/Widevine DRM detection via /proc hidepid.
+    """
+    if not hasattr(_wrap_ffmpeg_command, '_user_available'):
+        _wrap_ffmpeg_command._user_available = _check_ffmpeg_user_available()
+    
+    if _wrap_ffmpeg_command._user_available:
+        # Wrap with sudo -u ffmpeg_capture
+        return ['sudo', '-n', '-u', FFMPEG_CAPTURE_USER] + cmd
+    else:
+        return cmd
+
 @stream_app.route('/live_hls/<path:filename>')
 def serve_hls(filename):
     """Serve HLS segments for live streaming."""
@@ -2285,13 +2336,14 @@ def start_ffmpeg_recording(display):
                 log_file.flush()
             except Exception:
                 pass
+            wrapped_command = _wrap_ffmpeg_command(command)
             ffmpeg_process = subprocess.Popen(
-                command,
+                wrapped_command,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=os.environ.copy()
             )
-        logger.info(f"FFmpeg command: {' '.join(command)}")
+        logger.info(f"FFmpeg command: {' '.join(wrapped_command)}")
         logger.info(f"FFmpeg recording started with PID: {ffmpeg_process.pid}")
         logger.info(f"FFmpeg logs: {ffmpeg_log}")
 
@@ -2328,12 +2380,14 @@ def start_ffmpeg_recording(display):
                             log_file.flush()
                         except Exception:
                             pass
+                        wrapped_default_cmd = _wrap_ffmpeg_command(default_cmd)
                         ffmpeg_process = subprocess.Popen(
-                            default_cmd,
+                            wrapped_default_cmd,
                             stdout=log_file,
                             stderr=subprocess.STDOUT,
                             env=os.environ.copy()
                         )
+                    logger.info(f"FFmpeg retry command: {' '.join(wrapped_default_cmd)}")
                     time.sleep(2)
                     if ffmpeg_process.poll() is None:
                         return True, None
@@ -2366,14 +2420,15 @@ def start_ffmpeg_recording(display):
                             *hls_opts, '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                         ]
 
+                        wrapped_fifo_cmd = _wrap_ffmpeg_command(fifo_cmd)
                         with open(ffmpeg_log, 'w') as log_file:
                             try:
-                                log_file.write(f"[recorder] FFmpeg command: {' '.join(fifo_cmd)}\n")
+                                log_file.write(f"[recorder] FFmpeg command: {' '.join(wrapped_fifo_cmd)}\n")
                                 log_file.flush()
                             except Exception:
                                 pass
                             ffmpeg_process = subprocess.Popen(
-                                fifo_cmd,
+                                wrapped_fifo_cmd,
                                 stdout=log_file,
                                 stderr=subprocess.STDOUT,
                                 env=os.environ.copy()
@@ -2428,19 +2483,20 @@ def start_ffmpeg_recording(display):
                     '-c:a', 'aac', '-ar', AUDIO_SAMPLE_RATE, '-b:a', f'{AUDIO_BITRATE_K}k', '-ac', AUDIO_CHANNELS, '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
                     *hls_opts, '-f', 'hls', str(HLS_DIR / 'stream.m3u8')
                 ]
+                wrapped_fallback_cmd = _wrap_ffmpeg_command(fallback_cmd)
                 with open(ffmpeg_log, 'w') as log_file:
                     try:
-                        log_file.write(f"[recorder] FFmpeg command: {' '.join(fallback_cmd)}\n")
+                        log_file.write(f"[recorder] FFmpeg command: {' '.join(wrapped_fallback_cmd)}\n")
                         log_file.flush()
                     except Exception:
                         pass
                     ffmpeg_process = subprocess.Popen(
-                        fallback_cmd,
+                        wrapped_fallback_cmd,
                         stdout=log_file,
                         stderr=subprocess.STDOUT,
                         env=os.environ.copy()
                     )
-                logger.info(f"FFmpeg fallback command: {' '.join(fallback_cmd)}")
+                logger.info(f"FFmpeg fallback command: {' '.join(wrapped_fallback_cmd)}")
                 time.sleep(2)
                 if ffmpeg_process.poll() is not None:
                     logger.error(f"FFmpeg fallback exited immediately with code: {ffmpeg_process.poll()}")

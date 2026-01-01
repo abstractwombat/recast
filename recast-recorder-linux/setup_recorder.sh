@@ -101,6 +101,16 @@ sudo useradd -r -s /bin/bash -d /opt/recast -m recast 2>/dev/null || echo "User 
 sudo usermod -aG video recast
 echo "Added recast user to video group"
 
+# Create dedicated ffmpeg_capture user for running FFmpeg
+# This hides FFmpeg from Chrome/Widevine DRM detection
+echo "Creating ffmpeg_capture user for isolated screen capture..."
+sudo useradd -r -s /bin/false ffmpeg_capture 2>/dev/null || echo "ffmpeg_capture user already exists"
+sudo usermod -aG video ffmpeg_capture
+sudo usermod -aG audio ffmpeg_capture
+# Add ffmpeg_capture to recast group so it can write to recording directories
+sudo usermod -aG recast ffmpeg_capture
+echo "Added ffmpeg_capture user to video, audio, and recast groups"
+
 echo ""
 echo "Step 2: Installing system packages..."
 sudo apt update
@@ -216,7 +226,53 @@ fi
 echo "Configured Xwrapper to allow recast user to start Xorg"
 
 echo ""
-echo "Step 9: Installing project files and systemd service..."
+echo "Step 9b: Configuring /proc hidepid for process isolation..."
+# This prevents Chrome/Widevine from seeing FFmpeg process
+# hidepid=2 means users can only see their own processes
+if ! grep -q "hidepid=2" /etc/fstab; then
+    echo "Adding hidepid=2 to /proc mount in /etc/fstab..."
+    # Backup fstab first
+    sudo cp /etc/fstab /etc/fstab.backup.$(date +%Y%m%d%H%M%S)
+    # Add proc mount with hidepid if not already present
+    if grep -q "^proc" /etc/fstab; then
+        sudo sed -i 's|^proc.*|proc /proc proc defaults,hidepid=2 0 0|' /etc/fstab
+    else
+        echo "proc /proc proc defaults,hidepid=2 0 0" | sudo tee -a /etc/fstab
+    fi
+    # Remount /proc with hidepid now
+    sudo mount -o remount,hidepid=2 /proc 2>/dev/null || echo "Note: /proc remount may require reboot"
+    echo "Configured /proc with hidepid=2 for process isolation"
+else
+    echo "/proc already configured with hidepid=2"
+fi
+
+# Allow recast user to run ffmpeg as ffmpeg_capture without password
+echo "Configuring sudoers for passwordless ffmpeg execution..."
+SUDOERS_FILE="/etc/sudoers.d/recast-ffmpeg"
+sudo tee $SUDOERS_FILE > /dev/null << 'SUDOERS'
+# Allow recast user to run ffmpeg as ffmpeg_capture without password
+recast ALL=(ffmpeg_capture) NOPASSWD: /usr/bin/ffmpeg, /usr/local/bin/ffmpeg
+SUDOERS
+sudo chmod 440 $SUDOERS_FILE
+echo "Configured sudoers for recast -> ffmpeg_capture execution"
+
+# Grant ffmpeg_capture user access to X11 display
+# This is also done at runtime, but we set it up here for manual testing
+echo "Configuring X11 access for ffmpeg_capture user..."
+if command -v xhost >/dev/null 2>&1; then
+    # This will be run at service start, but document it here
+    echo "Note: X11 access will be granted at runtime via 'xhost +SI:localuser:ffmpeg_capture'"
+fi
+
+# Ensure HLS output directory is writable by ffmpeg_capture
+echo "Setting up directory permissions for ffmpeg_capture..."
+sudo mkdir -p /opt/recast/recorder_temp/hls_stream
+sudo chown recast:recast /opt/recast/recorder_temp
+sudo chmod 775 /opt/recast/recorder_temp
+sudo chmod 775 /opt/recast/recorder_temp/hls_stream 2>/dev/null || true
+
+echo ""
+echo "Step 10: Installing project files and systemd service..."
 sudo cp "$SCRIPT_DIR"/*.py /opt/recast/
 sudo cp -r "$SCRIPT_DIR/browser_controllers" /opt/recast/
 sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/
