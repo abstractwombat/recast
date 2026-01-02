@@ -225,6 +225,38 @@ if (-not (Test-Path $recordingsPath)) {
     Write-Host "  Created: $recordingsPath" -ForegroundColor Green
 }
 
+# Create logs directory
+$logsPath = Join-Path $InstallPath "logs"
+if (-not (Test-Path $logsPath)) {
+    New-Item -ItemType Directory -Path $logsPath -Force | Out-Null
+    Write-Host "  Created: $logsPath" -ForegroundColor Green
+}
+
+# Grant Users group write access to recordings and logs directories
+# This allows the app to run without admin privileges
+Write-Host "  Setting directory permissions..." -ForegroundColor Cyan
+try {
+    $acl = Get-Acl $recordingsPath
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule("Users", "Modify", "ContainerInherit,ObjectInherit", "None", "Allow")
+    $acl.SetAccessRule($rule)
+    Set-Acl $recordingsPath $acl
+    Write-Host "  Granted Users write access to recordings directory" -ForegroundColor Green
+    
+    $acl = Get-Acl $logsPath
+    $acl.SetAccessRule($rule)
+    Set-Acl $logsPath $acl
+    Write-Host "  Granted Users write access to logs directory" -ForegroundColor Green
+    
+    # Also grant write access to the main install directory for appsettings updates
+    $acl = Get-Acl $InstallPath
+    $acl.SetAccessRule($rule)
+    Set-Acl $InstallPath $acl
+    Write-Host "  Granted Users write access to install directory" -ForegroundColor Green
+} catch {
+    Write-Host "  WARNING: Could not set directory permissions: $_" -ForegroundColor Yellow
+    Write-Host "  You may need to run the application as Administrator" -ForegroundColor Yellow
+}
+
 # Step 4: Copy files
 Write-Host ""
 Write-Host "Step 4: Copying application files..." -ForegroundColor Cyan
