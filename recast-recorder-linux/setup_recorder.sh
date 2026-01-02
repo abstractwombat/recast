@@ -250,8 +250,8 @@ fi
 echo "Configuring sudoers for passwordless ffmpeg execution..."
 SUDOERS_FILE="/etc/sudoers.d/recast-ffmpeg"
 sudo tee $SUDOERS_FILE > /dev/null << 'SUDOERS'
-# Allow recast user to run ffmpeg as ffmpeg_capture without password
-recast ALL=(ffmpeg_capture) NOPASSWD: /usr/bin/ffmpeg, /usr/local/bin/ffmpeg
+# Allow recast user to run ffmpeg (and version check) as ffmpeg_capture without password
+recast ALL=(ffmpeg_capture) NOPASSWD: /usr/bin/ffmpeg, /usr/local/bin/ffmpeg, /usr/bin/ffmpeg -version
 SUDOERS
 sudo chmod 440 $SUDOERS_FILE
 echo "Configured sudoers for recast -> ffmpeg_capture execution"
@@ -278,8 +278,9 @@ sudo cp -r "$SCRIPT_DIR/browser_controllers" /opt/recast/
 sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/
 sudo cp "$SCRIPT_DIR/recast-recorder.service" /opt/recast/recast-recorder.service
 
-# Set ownership (exclude problematic cache/fuse directories)
-find /opt/recast -path "/opt/recast/.cache" -prune -o -print0 | xargs -0 sudo chown recast:recast 2>/dev/null || true
+# Set ownership (exclude Chrome profile and cache directories to avoid permission errors)
+sudo chown -R recast:recast /opt/recast/*.py /opt/recast/browser_controllers /opt/recast/templates /opt/recast/recorder_temp 2>/dev/null || true
+sudo chown recast:recast /opt/recast/config.toml /opt/recast/recast-recorder.service 2>/dev/null || true
 
 sudo ln -sf /opt/recast/recast-recorder.service /etc/systemd/system/recast-recorder.service
 sudo systemctl daemon-reload

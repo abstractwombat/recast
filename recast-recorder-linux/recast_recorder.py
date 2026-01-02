@@ -168,13 +168,13 @@ def _check_ffmpeg_user_available():
             logger.warning(f"User '{FFMPEG_CAPTURE_USER}' does not exist. FFmpeg will run as current user.")
             return False
         
-        # Check if sudo is available for this user
+        # Check if sudo is available for this user by testing ffmpeg -version
         result = subprocess.run(
-            ['sudo', '-n', '-u', FFMPEG_CAPTURE_USER, 'true'],
+            ['sudo', '-n', '-u', FFMPEG_CAPTURE_USER, 'ffmpeg', '-version'],
             capture_output=True, timeout=5
         )
         if result.returncode != 0:
-            logger.warning(f"Cannot sudo to '{FFMPEG_CAPTURE_USER}'. FFmpeg will run as current user.")
+            logger.warning(f"Cannot sudo to '{FFMPEG_CAPTURE_USER}'. FFmpeg will run as current user. Error: {result.stderr.decode()[:200]}")
             return False
         
         # Grant X11 access to ffmpeg_capture user
