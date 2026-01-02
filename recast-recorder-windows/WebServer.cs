@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
@@ -9,8 +12,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.StaticFiles;
 using Serilog;
+using Recast.WindowsRecorder.Config;
 using Recast.WindowsRecorder.Models;
 using Recast.WindowsRecorder.Services;
 
@@ -40,6 +45,7 @@ namespace Recast.WindowsRecorder
             builder.Services.AddSingleton(rootServices.GetRequiredService<SessionManager>());
             builder.Services.AddSingleton(rootServices.GetRequiredService<RecordingManager>());
             builder.Services.AddSingleton(rootServices.GetRequiredService<RecorderState>());
+            builder.Services.AddSingleton(rootServices.GetRequiredService<IOptionsMonitor<RecorderOptions>>());
 
             builder.Services.AddRouting();
             builder.Services.AddDirectoryBrowser();
@@ -164,6 +170,202 @@ namespace Recast.WindowsRecorder
                 var mp4 = await rec.FinalizeAsync(deleteHls: true);
                 await vnc.StopAsync();
                 return Results.Json(new { status = "success", mp4 = mp4 });
+            });
+
+            app.MapGet("/api/config", (IOptionsMonitor<RecorderOptions> options) =>
+            {
+                var cfg = options.CurrentValue ?? new RecorderOptions();
+                return Results.Json(new
+                {
+                    recording = new
+                    {
+                        screen_width = cfg.Width,
+                        screen_height = cfg.Height,
+                        framerate = cfg.Framerate,
+                        force_cfr = cfg.ForceCfr,
+                        audio_api = cfg.AudioApi,
+                        audio_device = cfg.AudioDevice,
+                    },
+                    video = new
+                    {
+                        preset = cfg.VideoPreset,
+                        crf = cfg.VideoCrf,
+                        profile = cfg.VideoProfile,
+                        pix_fmt = cfg.VideoPixFmt,
+                        gop_multiplier = cfg.GopMult,
+                        hls_time = cfg.HlsTime,
+                        video_encoder = cfg.VideoEncoder,
+                        hw_preset = cfg.HwPreset,
+                        hw_rc = cfg.HwRc,
+                        bitrate_kbps = cfg.VideoBitrateK,
+                        maxrate_kbps = cfg.VideoMaxrateK,
+                        bufsize_kbps = cfg.VideoBufsizeK,
+                        nvenc_qp = cfg.NvencQp,
+                        nvenc_cq = cfg.NvencCq,
+                    },
+                    audio = new
+                    {
+                        bitrate_kbps = cfg.AudioBitrateK,
+                        sample_rate = cfg.AudioSampleRate,
+                        channels = cfg.AudioChannels,
+                    },
+                    paths = new
+                    {
+                        ffmpeg_path = cfg.FfmpegPath,
+                        output_directory = cfg.OutputDirectory,
+                    },
+                    finalize = new
+                    {
+                        hard_cap_minutes = cfg.FinalizeHardCapMinutes,
+                        stall_cap_minutes = cfg.FinalizeStallCapMinutes,
+                        log_interval_seconds = cfg.FinalizeLogIntervalSeconds,
+                    }
+                });
+            });
+
+            app.MapPost("/api/config", async (HttpContext ctx, IOptionsMonitor<RecorderOptions> options) =>
+            {
+                try
+                {
+                    using var doc = await JsonDocument.ParseAsync(ctx.Request.Body);
+                    var root = doc.RootElement;
+
+                    static void SetIfPresent(JsonObject target, JsonElement src, string srcKey, string dstKey)
+                    {
+                        if (src.ValueKind != JsonValueKind.Object) return;
+                        if (!src.TryGetProperty(srcKey, out var el)) return;
+                        if (el.ValueKind == JsonValueKind.Null || el.ValueKind == JsonValueKind.Undefined) return;
+                        target[dstKey] = JsonNode.Parse(el.GetRawText());
+                    }
+
+                    var settingsPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+                    if (!File.Exists(settingsPath))
+                        return Results.Json(new { status = "error", message = "appsettings.json not found" }, statusCode: 500);
+
+                    var json = await File.ReadAllTextAsync(settingsPath);
+                    var node = JsonNode.Parse(json) as JsonObject ?? new JsonObject();
+                    var recorder = node["Recorder"] as JsonObject ?? new JsonObject();
+                    node["Recorder"] = recorder;
+
+                    if (root.TryGetProperty("recording", out var recording))
+                    {
+                        SetIfPresent(recorder, recording, "screen_width", "Width");
+                        SetIfPresent(recorder, recording, "screen_height", "Height");
+                        SetIfPresent(recorder, recording, "framerate", "Framerate");
+                        SetIfPresent(recorder, recording, "force_cfr", "ForceCfr");
+                        SetIfPresent(recorder, recording, "audio_api", "AudioApi");
+                        SetIfPresent(recorder, recording, "audio_device", "AudioDevice");
+                    }
+                    if (root.TryGetProperty("video", out var video))
+                    {
+                        SetIfPresent(recorder, video, "preset", "VideoPreset");
+                        SetIfPresent(recorder, video, "crf", "VideoCrf");
+                        SetIfPresent(recorder, video, "profile", "VideoProfile");
+                        SetIfPresent(recorder, video, "pix_fmt", "VideoPixFmt");
+                        SetIfPresent(recorder, video, "gop_multiplier", "GopMult");
+                        SetIfPresent(recorder, video, "hls_time", "HlsTime");
+                        SetIfPresent(recorder, video, "video_encoder", "VideoEncoder");
+                        SetIfPresent(recorder, video, "hw_preset", "HwPreset");
+                        SetIfPresent(recorder, video, "hw_rc", "HwRc");
+                        SetIfPresent(recorder, video, "bitrate_kbps", "VideoBitrateK");
+                        SetIfPresent(recorder, video, "maxrate_kbps", "VideoMaxrateK");
+                        SetIfPresent(recorder, video, "bufsize_kbps", "VideoBufsizeK");
+                        SetIfPresent(recorder, video, "nvenc_qp", "NvencQp");
+                        SetIfPresent(recorder, video, "nvenc_cq", "NvencCq");
+                    }
+                    if (root.TryGetProperty("audio", out var audio))
+                    {
+                        SetIfPresent(recorder, audio, "bitrate_kbps", "AudioBitrateK");
+                        SetIfPresent(recorder, audio, "sample_rate", "AudioSampleRate");
+                        SetIfPresent(recorder, audio, "channels", "AudioChannels");
+                    }
+                    if (root.TryGetProperty("paths", out var paths))
+                    {
+                        SetIfPresent(recorder, paths, "ffmpeg_path", "FfmpegPath");
+                        SetIfPresent(recorder, paths, "output_directory", "OutputDirectory");
+                    }
+                    if (root.TryGetProperty("finalize", out var finalize))
+                    {
+                        SetIfPresent(recorder, finalize, "hard_cap_minutes", "FinalizeHardCapMinutes");
+                        SetIfPresent(recorder, finalize, "stall_cap_minutes", "FinalizeStallCapMinutes");
+                        SetIfPresent(recorder, finalize, "log_interval_seconds", "FinalizeLogIntervalSeconds");
+                    }
+
+                    var tmp = settingsPath + ".tmp";
+                    await File.WriteAllTextAsync(tmp, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                    File.Copy(tmp, settingsPath, overwrite: true);
+                    try { File.Delete(tmp); } catch { }
+
+                    // Options will refresh via reloadOnChange; return the current snapshot (may lag briefly)
+                    var cfg = options.CurrentValue ?? new RecorderOptions();
+                    return Results.Json(new { status = "success", message = "Config saved", recorder = cfg.RecorderId });
+                }
+                catch (Exception ex)
+                {
+                    return Results.Json(new { status = "error", message = ex.Message }, statusCode: 400);
+                }
+            });
+
+            app.MapGet("/api/test_recording/status", (RecorderState state) =>
+            {
+                return Results.Json(new
+                {
+                    active = state.IsRecording,
+                    elapsed_seconds = state.RecordingElapsedSeconds
+                });
+            });
+
+            app.MapPost("/api/test_recording/start", async (HttpContext ctx, RecorderState state, RecordingManager rec, SessionManager sm, IOptionsMonitor<RecorderOptions> options) =>
+            {
+                try
+                {
+                    var payload = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object>>() ?? new();
+                    var controller = payload.ContainsKey("controller") ? payload["controller"]?.ToString() : "default";
+
+                    if (state.IsRecording)
+                        return Results.Json(new { status = "error", message = "Recording already in progress" }, statusCode: 400);
+
+                    var session = sm.Get(controller ?? "default");
+                    if (session == null)
+                        return Results.Json(new { status = "error", message = "No active session" }, statusCode: 400);
+
+                    state.StartRecording();
+                    var jobId = (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() % 100000);
+                    var cfg = options.CurrentValue ?? new RecorderOptions();
+                    var width = cfg.Width ?? state.ScreenWidth;
+                    var height = cfg.Height ?? state.ScreenHeight;
+                    var fr = cfg.Framerate ?? state.Framerate;
+                    var ok = await rec.StartAsync(jobId, width, height, fr);
+                    if (!ok)
+                    {
+                        state.StopRecording();
+                        return Results.Json(new { status = "error", message = "ffmpeg failed to start" }, statusCode: 500);
+                    }
+
+                    return Results.Json(new { status = "success", message = "Recording started", job_id = jobId });
+                }
+                catch (Exception ex)
+                {
+                    return Results.Json(new { status = "error", message = ex.Message }, statusCode: 500);
+                }
+            });
+
+            app.MapPost("/api/test_recording/stop", async (HttpContext ctx, RecorderState state, RecordingManager rec) =>
+            {
+                try
+                {
+                    if (!state.IsRecording)
+                        return Results.Json(new { status = "error", message = "No recording in progress" }, statusCode: 400);
+
+                    var elapsed = state.StopRecording();
+                    await rec.StopAsync();
+
+                    return Results.Json(new { status = "success", elapsed_seconds = elapsed });
+                }
+                catch (Exception ex)
+                {
+                    return Results.Json(new { status = "error", message = ex.Message }, statusCode: 500);
+                }
             });
 
             app.Lifetime.ApplicationStopping.Register(() =>

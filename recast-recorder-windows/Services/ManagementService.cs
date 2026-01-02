@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Net.Http;
+using System.Globalization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -324,11 +325,20 @@ namespace Recast.WindowsRecorder.Services
                 _log.LogInformation("State update -> {Status} jobId={JobId}", _state.Status, _state.CurrentJobId);
 
                 // Wait until end time or cancellation/stop is requested
-                DateTime endUtc;
-                if (!DateTime.TryParse(endTimeStr, out endUtc)) endUtc = DateTime.UtcNow.AddMinutes(5);
+                var nowUtc = DateTimeOffset.UtcNow;
+                DateTimeOffset endUtc;
+                if (!TryParseJobTimeUtc(endTimeStr, out endUtc))
+                {
+                    endUtc = nowUtc.AddMinutes(5);
+                    _log.LogWarning("[job {Job}] Could not parse end_time='{EndTime}', defaulting endUtc={EndUtc:o}", jobId, endTimeStr, endUtc);
+                }
+                else
+                {
+                    _log.LogInformation("[job {Job}] Parsed end_time='{EndTime}' -> endUtc={EndUtc:o} (nowUtc={NowUtc:o})", jobId, endTimeStr, endUtc, nowUtc);
+                }
                 while (!ct.IsCancellationRequested)
                 {
-                    if (DateTime.UtcNow >= endUtc) break;
+                    if (DateTimeOffset.UtcNow >= endUtc) break;
                     // Poll job status for cancel/stop
                     try
                     {
@@ -443,6 +453,39 @@ namespace Recast.WindowsRecorder.Services
                 var finalStatus = stopReason == "CANCELLED" ? "CANCELLED" : "COMPLETED";
                 try { await UpdateJobStatusAsync(client, jobId, finalStatus, null, outerCt); } catch (Exception ex) { _log.LogWarning(ex, "[job {Job}] Final status update failed", jobId); }
             }
+        }
+
+        private static bool TryParseJobTimeUtc(string? value, out DateTimeOffset utc)
+        {
+            utc = default;
+            if (string.IsNullOrWhiteSpace(value)) return false;
+
+            // We accept:
+            // - ISO 8601 with offset (e.g., 2025-12-24T15:52:55-07:00)
+            // - Local time without offset (assume local)
+            // - UTC time with Z
+            var styles = DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal;
+
+            if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, styles, out var dto) ||
+                DateTimeOffset.TryParse(value, CultureInfo.CurrentCulture, styles, out dto))
+            {
+                utc = dto.ToUniversalTime();
+                return true;
+            }
+
+            // Final fallback for unusual formats
+            if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var dt) ||
+                DateTime.TryParse(value, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out dt))
+            {
+                if (dt.Kind == DateTimeKind.Unspecified)
+                {
+                    dt = DateTime.SpecifyKind(dt, DateTimeKind.Local);
+                }
+                utc = new DateTimeOffset(dt).ToUniversalTime();
+                return true;
+            }
+
+            return false;
         }
 
         private async Task UpdateJobStatusAsync(HttpClient client, int jobId, string status, string? msg, CancellationToken ct)

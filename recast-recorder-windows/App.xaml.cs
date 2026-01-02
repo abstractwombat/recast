@@ -46,7 +46,11 @@ namespace Recast.WindowsRecorder
                 Log.Logger = new LoggerConfiguration()
                     .MinimumLevel.Debug()
                     .Enrich.FromLogContext()
-                    .WriteTo.File(Path.Combine(logDir, "recorder-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 7)
+                    .WriteTo.File(
+                        Path.Combine(logDir, "recorder-.log"),
+                        outputTemplate: "{Timestamp:yyyy-MM-ddTHH:mm:ss.fffzzz} [{Level:u4}] {Message:lj}{NewLine}{Exception}",
+                        rollingInterval: RollingInterval.Day,
+                        retainedFileCountLimit: 7)
                     .CreateLogger();
 
                 var config = new ConfigurationBuilder()
