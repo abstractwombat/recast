@@ -159,6 +159,108 @@ def get_local_ip():
 # FFmpeg capture user for process isolation (hides FFmpeg from Chrome/Widevine DRM)
 FFMPEG_CAPTURE_USER = "ffmpeg_capture"
 
+# Nested X server for complete Widevine isolation
+# Chrome runs on nested display, FFmpeg captures from outer display
+NESTED_XEPHYR_PROCESS = None
+NESTED_DISPLAY = None
+
+def start_nested_xephyr(outer_display, width=1920, height=1080):
+    """
+    Start a nested Xephyr X server inside the outer display.
+    
+    This provides complete isolation between Chrome (on nested display) and 
+    FFmpeg (capturing from outer display). Widevine cannot detect FFmpeg
+    because they're on completely separate X servers.
+    
+    Args:
+        outer_display: The outer display (e.g., ":1") where Xephyr will render
+        width, height: Resolution for the nested display
+        
+    Returns:
+        (nested_display_name, xephyr_process) or (None, None) on failure
+    """
+    global NESTED_XEPHYR_PROCESS, NESTED_DISPLAY
+    
+    # Find a free display number for the nested server
+    nested_num = find_free_display()
+    nested_display = f":{nested_num}"
+    
+    try:
+        # Check if Xephyr is available
+        result = subprocess.run(['which', 'Xephyr'], capture_output=True, timeout=5)
+        if result.returncode != 0:
+            logger.warning("Xephyr not found. Install with: apt install xserver-xephyr")
+            return None, None
+        
+        xephyr_log = TEMP_DIR / f'xephyr_{nested_num}.log'
+        
+        # Start Xephyr nested inside the outer display
+        # -fullscreen makes it fill the outer display completely
+        # -resizeable allows dynamic resizing
+        # -no-host-grab prevents Xephyr from grabbing keyboard/mouse from host
+        env = os.environ.copy()
+        env['DISPLAY'] = outer_display
+        
+        xephyr_cmd = [
+            'Xephyr',
+            nested_display,
+            '-screen', f'{width}x{height}',
+            '-fullscreen',
+            '-no-host-grab',
+            '-resizeable',
+        ]
+        
+        logger.info(f"Starting nested Xephyr: {' '.join(xephyr_cmd)} (inside {outer_display})")
+        
+        with open(xephyr_log, 'w') as log_file:
+            xephyr_process = subprocess.Popen(
+                xephyr_cmd,
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True
+            )
+        
+        # Wait for Xephyr to start
+        time.sleep(2)
+        
+        if xephyr_process.poll() is not None:
+            if xephyr_log.exists():
+                log_content = xephyr_log.read_text()[-500:]
+                logger.error(f"Xephyr failed to start. Log: {log_content}")
+            return None, None
+        
+        NESTED_XEPHYR_PROCESS = xephyr_process
+        NESTED_DISPLAY = nested_display
+        
+        logger.info(f"Nested Xephyr started on {nested_display} (inside {outer_display}) with PID {xephyr_process.pid}")
+        return nested_display, xephyr_process
+        
+    except Exception as e:
+        logger.error(f"Failed to start nested Xephyr: {e}")
+        return None, None
+
+
+def stop_nested_xephyr():
+    """Stop the nested Xephyr server if running."""
+    global NESTED_XEPHYR_PROCESS, NESTED_DISPLAY
+    
+    if NESTED_XEPHYR_PROCESS and NESTED_XEPHYR_PROCESS.poll() is None:
+        try:
+            NESTED_XEPHYR_PROCESS.terminate()
+            NESTED_XEPHYR_PROCESS.wait(timeout=5)
+            logger.info(f"Nested Xephyr on {NESTED_DISPLAY} stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping Xephyr: {e}")
+            try:
+                NESTED_XEPHYR_PROCESS.kill()
+            except Exception:
+                pass
+    
+    NESTED_XEPHYR_PROCESS = None
+    NESTED_DISPLAY = None
+
+
 def _check_ffmpeg_user_available():
     """Check if ffmpeg_capture user exists and sudo is configured."""
     try:
@@ -1085,37 +1187,55 @@ def _get_or_create_session():
         _cleanup_browser_session()
     
     # Create new session with virtual display
+    # Use nested Xephyr for Widevine isolation: Chrome on nested display, FFmpeg captures outer
     try:
-        display_name = None
+        outer_display = None
         xorg_process = None
         pyvd_display = None
+        nested_display = None
+        xephyr_process = None
         
         # Try Xorg with dummy driver first for proper 60Hz refresh rate
-        display_name, xorg_process = start_xorg_display(SCREEN_WIDTH, SCREEN_HEIGHT)
+        outer_display, xorg_process = start_xorg_display(SCREEN_WIDTH, SCREEN_HEIGHT)
         
-        if display_name is None:
+        if outer_display is None:
             # Fall back to Xvfb via pyvirtualdisplay
             logger.info("Falling back to Xvfb for browser session (no 60Hz support)")
             from pyvirtualdisplay import Display
             pyvd_display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
             pyvd_display.start()
-            display_name = f":{pyvd_display.display}"
+            outer_display = f":{pyvd_display.display}"
         else:
-            logger.info(f"Using Xorg with dummy driver on {display_name} for browser session (60Hz enabled)")
+            logger.info(f"Using Xorg with dummy driver on {outer_display} for browser session (60Hz enabled)")
         
-        os.environ['DISPLAY'] = display_name
+        # Start nested Xephyr for Widevine isolation
+        # Chrome will run on nested display, FFmpeg captures from outer display
+        nested_display, xephyr_process = start_nested_xephyr(outer_display, SCREEN_WIDTH, SCREEN_HEIGHT)
+        
+        if nested_display:
+            # Use nested display for browser (Widevine isolation)
+            browser_display = nested_display
+            logger.info(f"Widevine isolation enabled: Chrome on {nested_display}, FFmpeg captures {outer_display}")
+        else:
+            # Fallback: no isolation, use outer display directly
+            browser_display = outer_display
+            logger.warning("Xephyr not available - Widevine isolation disabled, Chrome and FFmpeg share display")
+        
+        os.environ['DISPLAY'] = browser_display
         
         browser_sessions[DEFAULT_SESSION_NAME] = {
-            'display': display_name,
-            'display_obj': pyvd_display,  # Will be None if using Xorg
-            'xorg_proc': xorg_process,    # Will be None if using Xvfb
+            'display': browser_display,           # Display for Chrome (nested if available)
+            'outer_display': outer_display,       # Display for FFmpeg capture
+            'display_obj': pyvd_display,          # Will be None if using Xorg
+            'xorg_proc': xorg_process,            # Will be None if using Xvfb
+            'xephyr_proc': xephyr_process,        # Nested X server process
             'vnc_proc': None,
             'vnc_port': None,
             'controller': None,
             'controller_proc': None,
         }
         
-        logger.info(f"Browser session created on display {display_name}")
+        logger.info(f"Browser session created: Chrome on {browser_display}, FFmpeg target {outer_display}")
         return browser_sessions[DEFAULT_SESSION_NAME]
     except Exception as e:
         logger.error(f"Failed to create browser session: {e}")
@@ -1145,7 +1265,20 @@ def _cleanup_browser_session():
         except Exception:
             pass
     
-    # Stop display (Xorg or Xvfb)
+    # Stop nested Xephyr first (before outer display)
+    try:
+        xephyr_proc = sess.get('xephyr_proc')
+        if xephyr_proc and xephyr_proc.poll() is None:
+            xephyr_proc.terminate()
+            try:
+                xephyr_proc.wait(timeout=5)
+            except Exception:
+                xephyr_proc.kill()
+            logger.info("Nested Xephyr stopped")
+    except Exception:
+        pass
+    
+    # Stop outer display (Xorg or Xvfb)
     try:
         xorg_proc = sess.get('xorg_proc')
         if xorg_proc and xorg_proc.poll() is None:
@@ -1164,6 +1297,9 @@ def _cleanup_browser_session():
             logger.info("Xvfb display stopped")
     except Exception:
         pass
+    
+    # Also clean up global Xephyr state
+    stop_nested_xephyr()
     
     browser_sessions.pop(DEFAULT_SESSION_NAME, None)
     logger.info("Browser session cleaned up")
@@ -2827,32 +2963,66 @@ def execute_recording_job(job):
         pass
     
     try:
-        # Start virtual display
-        from pyvirtualdisplay import Display
-        display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
-        display.start()
-        display_name = f":{display.display}"
-        os.environ['DISPLAY'] = display_name
-        logger.info(f"Virtual display started: {display_name}")
+        # Start virtual display with nested Xephyr for Widevine isolation
+        outer_display = None
+        xorg_process = None
+        pyvd_display = None
+        nested_display = None
+        xephyr_process = None
+        
+        # Try Xorg with dummy driver first for proper 60Hz refresh rate
+        outer_display, xorg_process = start_xorg_display(SCREEN_WIDTH, SCREEN_HEIGHT)
+        
+        if outer_display is None:
+            # Fall back to Xvfb via pyvirtualdisplay
+            logger.info("Falling back to Xvfb for job (no 60Hz support)")
+            from pyvirtualdisplay import Display
+            pyvd_display = Display(size=(SCREEN_WIDTH, SCREEN_HEIGHT), use_xauth=False)
+            pyvd_display.start()
+            outer_display = f":{pyvd_display.display}"
+        else:
+            logger.info(f"Using Xorg with dummy driver on {outer_display} for job (60Hz enabled)")
+        
+        # Start nested Xephyr for Widevine isolation
+        # Chrome will run on nested display, FFmpeg captures from outer display
+        nested_display, xephyr_process = start_nested_xephyr(outer_display, SCREEN_WIDTH, SCREEN_HEIGHT)
+        
+        if nested_display:
+            # Use nested display for browser (Widevine isolation)
+            browser_display = nested_display
+            ffmpeg_display = outer_display  # FFmpeg captures the outer display where Xephyr renders
+            logger.info(f"Widevine isolation enabled: Chrome on {nested_display}, FFmpeg captures {outer_display}")
+        else:
+            # Fallback: no isolation, use outer display directly
+            browser_display = outer_display
+            ffmpeg_display = outer_display
+            logger.warning("Xephyr not available - Widevine isolation disabled")
+        
+        os.environ['DISPLAY'] = browser_display
+        logger.info(f"Virtual display started: browser={browser_display}, ffmpeg={ffmpeg_display}")
         
         # Store display in browser_sessions so cleanup can find it
         browser_sessions[DEFAULT_SESSION_NAME] = {
-            'display': display_name,
-            'display_obj': display,
+            'display': browser_display,
+            'outer_display': outer_display,
+            'ffmpeg_display': ffmpeg_display,  # Display for FFmpeg capture
+            'display_obj': pyvd_display,
+            'xorg_proc': xorg_process,
+            'xephyr_proc': xephyr_process,
             'vnc_proc': None,
             'vnc_port': None,
             'controller': browser_controller,
             'controller_proc': None,
         }
         
-        # Start VNC server for remote viewing/control
-        v = start_vnc_server(display_name)
-        controller_vnc[browser_controller] = {'display': display_name, 'process': v}
+        # Start VNC server on outer display for remote viewing
+        v = start_vnc_server(outer_display)
+        controller_vnc[browser_controller] = {'display': outer_display, 'process': v}
         # Update VNC info in session
         browser_sessions[DEFAULT_SESSION_NAME]['vnc_proc'] = v
         
-        # Start browser with specified controller
-        if not start_browser(url, display_name, browser_controller):
+        # Start browser with specified controller (on nested display)
+        if not start_browser(url, browser_display, browser_controller):
             raise Exception("Failed to start browser")
         
         # Wait for browser ready signal
@@ -2876,8 +3046,8 @@ def execute_recording_job(job):
         
         logger.info("Browser ready, starting FFmpeg")
         
-        # Start FFmpeg
-        ffmpeg_success, ffmpeg_error = start_ffmpeg_recording(display_name)
+        # Start FFmpeg on the outer display (captures Xephyr window, not Chrome's X server)
+        ffmpeg_success, ffmpeg_error = start_ffmpeg_recording(ffmpeg_display)
         if not ffmpeg_success:
             raise Exception(ffmpeg_error or "Failed to start FFmpeg")
         # Determine actual start time as when the first HLS segment appears

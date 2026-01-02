@@ -121,6 +121,7 @@ sudo apt install -y \
     xauth \
     x11vnc \
     xserver-xorg-video-dummy \
+    xserver-xephyr \
     pipewire pipewire-pulse wireplumber pulseaudio-utils
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
     sudo apt install -y chromium || sudo apt install -y chromium-browser || (command -v snap >/dev/null 2>&1 && sudo snap install chromium) || echo "Warning: Chromium installation failed; please install Chromium manually"
@@ -267,9 +268,10 @@ fi
 # Ensure HLS output directory is writable by ffmpeg_capture
 echo "Setting up directory permissions for ffmpeg_capture..."
 sudo mkdir -p /opt/recast/recorder_temp/hls_stream
-sudo chown recast:recast /opt/recast/recorder_temp
-sudo chmod 775 /opt/recast/recorder_temp
-sudo chmod 775 /opt/recast/recorder_temp/hls_stream 2>/dev/null || true
+sudo chown -R recast:recast /opt/recast/recorder_temp
+sudo chmod -R 775 /opt/recast/recorder_temp
+# Ensure ffmpeg_capture is in recast group so it can write to group-writable directories
+sudo usermod -a -G recast ffmpeg_capture 2>/dev/null || true
 
 echo ""
 echo "Step 10: Installing project files and systemd service..."
