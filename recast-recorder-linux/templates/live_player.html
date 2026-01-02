@@ -183,7 +183,27 @@
                     castReceiverAppId: 'CC1AD845'
                 });
                 try { video.removeAttribute('controls'); } catch {}
-                player.configure({ streaming: { rebufferingGoal: 2, bufferingGoal: 10 } });
+                player.configure({
+                    streaming: {
+                        rebufferingGoal: 4,        // Wait for 4s of buffer before resuming after stall
+                        bufferingGoal: 30,         // Try to buffer 30s ahead
+                        bufferBehind: 60,          // Keep 60s of played content in buffer
+                        retryParameters: {
+                            maxAttempts: 5,
+                            baseDelay: 500,
+                            backoffFactor: 1.5,
+                            timeout: 30000
+                        }
+                    },
+                    manifest: {
+                        retryParameters: {
+                            maxAttempts: 5,
+                            baseDelay: 500,
+                            backoffFactor: 1.5,
+                            timeout: 30000
+                        }
+                    }
+                });
                 player.addEventListener('error', e => console.error('Shaka error', e));
                 player.load(streamUrl).then(() => {
                     applyInitialSeekWhenReady();
