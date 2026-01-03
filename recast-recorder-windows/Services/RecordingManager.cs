@@ -53,6 +53,9 @@ namespace Recast.WindowsRecorder.Services
                              ?? Environment.GetEnvironmentVariable("FFMPEG")
                              ?? "ffmpeg";
 
+            // Log effective configuration
+            LogEffectiveConfig(cfg, width, height, framerate);
+
             // Prefer ddagrab (Desktop Duplication), fallback to gdigrab. Capture full desktop, scale/pad to output.
             var commonArgs = "-y ";
             var segTmpl = Path.Combine(CurrentDir, "seg%05d.ts");
@@ -62,62 +65,75 @@ namespace Recast.WindowsRecorder.Services
             var vCrf = cfg?.VideoCrf ?? 23;
             var vProfile = string.IsNullOrWhiteSpace(cfg?.VideoProfile) ? "main" : cfg!.VideoProfile!;
             var vPixFmt = string.IsNullOrWhiteSpace(cfg?.VideoPixFmt) ? "yuv420p" : cfg!.VideoPixFmt!;
+            var vThreads = cfg?.VideoThreads ?? 2;
+            
+            // GOP settings: GopSeconds takes precedence over GopMult
             var gopMult = cfg?.GopMult ?? 2;
+            var gopSeconds = cfg?.GopSeconds ?? 0;
+            var gopSize = gopSeconds > 0 ? (framerate * gopSeconds) : (framerate * Math.Max(1, gopMult));
+            
+            // HLS settings
             var hlsTime = cfg?.HlsTime ?? 2;
+            var hlsListSize = cfg?.HlsListSize ?? 0;
+            var hlsFlags = string.IsNullOrWhiteSpace(cfg?.HlsFlags) ? "append_list+omit_endlist" : cfg!.HlsFlags!;
+            var hlsPlaylistType = string.IsNullOrWhiteSpace(cfg?.HlsPlaylistType) ? "event" : cfg!.HlsPlaylistType!;
+            
+            // Audio settings
             var aRate = cfg?.AudioSampleRate ?? 48000;
             var aBr = cfg?.AudioBitrateK ?? 128;
             var aCh = cfg?.AudioChannels ?? 2;
-            // Force CFR output with explicit rate to prevent frame duplication stutter
-            var vsyncArg = $"-fps_mode cfr -r {framerate}";
-            var vCodec = string.IsNullOrWhiteSpace(cfg?.VideoEncoder) ? "libx264" : cfg!.VideoEncoder!;
+            
+            // FPS mode: use config or default to cfr
+            var fpsMode = string.IsNullOrWhiteSpace(cfg?.FpsMode) ? "cfr" : cfg!.FpsMode!;
+            var vsyncArg = $"-fps_mode {fpsMode} -r {framerate}";
+            
+            // Determine video encoder: HwAccel takes precedence, then VideoEncoder, then default to libx264
+            var hwAccel = cfg?.HwAccel?.Trim().ToLowerInvariant() ?? "none";
+            string vCodec;
+            if (hwAccel == "nvenc")
+                vCodec = "h264_nvenc";
+            else if (hwAccel == "qsv")
+                vCodec = "h264_qsv";
+            else if (hwAccel == "amf")
+                vCodec = "h264_amf";
+            else if (!string.IsNullOrWhiteSpace(cfg?.VideoEncoder))
+                vCodec = cfg!.VideoEncoder!;
+            else
+                vCodec = "libx264";
+            
             var probe = "-probesize 100M -analyzeduration 5M";
             string outArgs;
-            if (vCodec.IndexOf("nvenc", StringComparison.OrdinalIgnoreCase) >= 0)
+            bool isNvenc = vCodec.IndexOf("nvenc", StringComparison.OrdinalIgnoreCase) >= 0;
+            
+            if (isNvenc)
             {
-                var hwPreset = cfg?.HwPreset;
-                var hwRc = cfg?.HwRc?.Trim().ToLowerInvariant();
-                int? vBit = cfg?.VideoBitrateK;
-                int? vMax = cfg?.VideoMaxrateK;
-                int? vBuf = cfg?.VideoBufsizeK;
-                int? qp = cfg?.NvencQp;
-                int? cq = cfg?.NvencCq;
-                string vRateArgs;
-                if (hwRc == "cqp" || hwRc == "constqp")
-                {
-                    vRateArgs = qp.HasValue ? ("-rc constqp -qp " + qp.Value) : "-rc vbr_hq";
-                }
-                else if (hwRc == "cq")
-                {
-                    vRateArgs = cq.HasValue ? ("-rc vbr_hq -cq " + cq.Value) : (vBit.HasValue ? ($"-rc vbr_hq -b:v {vBit.Value}k" + (vMax.HasValue ? $" -maxrate {vMax.Value}k" : $" -maxrate {vBit.Value}k") + (vBuf.HasValue ? $" -bufsize {vBuf.Value}k" : "")) : "-rc vbr_hq");
-                }
-                else if (hwRc == "cbr")
-                {
-                    if (vBit.HasValue)
-                    {
-                        var buf = vBuf.HasValue ? vBuf.Value : vBit.Value * 2;
-                        vRateArgs = $"-rc cbr -b:v {vBit.Value}k -maxrate {vBit.Value}k -bufsize {buf}k";
-                    }
-                    else vRateArgs = "-rc cbr";
-                }
-                else
-                {
-                    vRateArgs = vBit.HasValue ? ($"-rc vbr_hq -b:v {vBit.Value}k" + (vMax.HasValue ? $" -maxrate {vMax.Value}k" : "") + (vBuf.HasValue ? $" -bufsize {vBuf.Value}k" : "")) : "-rc vbr_hq";
-                }
-                var presetArg = !string.IsNullOrWhiteSpace(hwPreset) ? (" -preset " + hwPreset) : string.Empty;
-                var vArgs = "-c:v " + vCodec + presetArg + " -pix_fmt " + vPixFmt + " -profile:v " + vProfile + " " + vRateArgs + " -g " + (framerate * Math.Max(1, gopMult));
-                outArgs = vsyncArg + " -vf \"" + vf + "\" " + vArgs +
-                          " -c:a aac -ar " + aRate + " -b:a " + aBr + "k -ac " + aCh + " -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
-                          " -hls_time " + hlsTime + " -hls_list_size 0 -hls_flags append_list+omit_endlist -hls_playlist_type event " +
-                          " -hls_segment_filename \"" + segTmpl + "\" -f hls \"" + playlist + "\"";
+                outArgs = BuildNvencArgs(cfg, vCodec, vPixFmt, vProfile, gopSize, framerate, vf, vsyncArg, aRate, aBr, aCh, hlsTime, hlsListSize, hlsFlags, hlsPlaylistType, segTmpl, playlist);
             }
             else
             {
-                outArgs = vsyncArg + " -vf \"" + vf + "\" -c:v libx264 -pix_fmt " + vPixFmt + " -profile:v " + vProfile + " -preset " + vPreset + " -crf " + vCrf + " -g " + (framerate * Math.Max(1, gopMult)) +
-                          " -c:a aac -ar " + aRate + " -b:a " + aBr + "k -ac " + aCh + " -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
-                          " -hls_time " + hlsTime + " -hls_list_size 0 -hls_flags append_list+omit_endlist -hls_playlist_type event " +
-                          " -hls_segment_filename \"" + segTmpl + "\" -f hls \"" + playlist + "\"";
+                // Software encoding (libx264)
+                var x264Args = $"-c:v libx264 -pix_fmt {vPixFmt} -profile:v {vProfile} -preset {vPreset} -crf {vCrf} -threads {vThreads} -g {gopSize}";
+                
+                // Add bitrate constraints if specified
+                if (cfg?.VideoBitrateK.HasValue == true)
+                {
+                    x264Args += $" -b:v {cfg.VideoBitrateK.Value}k";
+                    if (cfg?.VideoMaxrateK.HasValue == true)
+                        x264Args += $" -maxrate {cfg.VideoMaxrateK.Value}k";
+                    if (cfg?.VideoBufsizeK.HasValue == true)
+                        x264Args += $" -bufsize {cfg.VideoBufsizeK.Value}k";
+                }
+                
+                outArgs = $"{vsyncArg} -vf \"{vf}\" {x264Args}" +
+                          $" -c:a aac -ar {aRate} -b:a {aBr}k -ac {aCh} -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
+                          $" -hls_time {hlsTime} -hls_list_size {hlsListSize} -hls_flags {hlsFlags} -hls_playlist_type {hlsPlaylistType}" +
+                          $" -hls_segment_filename \"{segTmpl}\" -f hls \"{playlist}\"";
             }
-            var tqs = "-thread_queue_size 4096";
+            
+            // Thread queue size from config
+            var videoTqs = cfg?.VideoThreadQueueSize ?? 4096;
+            var audioTqs = cfg?.AudioThreadQueueSize ?? 4096;
+            var tqs = $"-thread_queue_size {videoTqs}";
 
             // Probe DirectShow audio devices (log list) and pick common system-mix names
             string? dshowAudio = null;
@@ -145,7 +161,8 @@ namespace Recast.WindowsRecorder.Services
 
             // Audio input args: use wallclock timestamps for dshow to sync with video capture time
             // Audio input: delay audio by ~100ms to compensate for audio arriving ahead of video frames
-            var dshowAudioArgs = $"-itsoffset 0.1 {tqs} -rtbufsize 256M -f dshow -audio_buffer_size 50 -use_wallclock_as_timestamps 1";
+            var audioTqsArg = $"-thread_queue_size {audioTqs}";
+            var dshowAudioArgs = $"-itsoffset 0.1 {audioTqsArg} -rtbufsize 256M -f dshow -audio_buffer_size 50 -use_wallclock_as_timestamps 1";
 
             if (!string.IsNullOrWhiteSpace(audioDev))
             {
@@ -166,7 +183,12 @@ namespace Recast.WindowsRecorder.Services
             foreach (var tail in chainAttempts)
             {
                 var args = commonArgs + tail;
-                _log.LogInformation("Starting ffmpeg: {Args}", args);
+                var fullCommand = $"{ffmpeg} {args}";
+                _log.LogInformation("========== FFmpeg Recording Start ==========");
+                _log.LogInformation("FFmpeg path: {Path}", ffmpeg);
+                _log.LogInformation("FFmpeg full command:\n{Command}", fullCommand);
+                _log.LogInformation("Working directory: {Dir}", CurrentDir);
+                _log.LogInformation("============================================");
                 try
                 {
                     _proc = Process.Start(new ProcessStartInfo
@@ -191,9 +213,32 @@ namespace Recast.WindowsRecorder.Services
                     var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
                     try { Directory.CreateDirectory(logDir); } catch { }
                     var ffmpegLogPath = Path.Combine(logDir, $"ffmpeg-job-{(CurrentJobId ?? jobId)}-{DateTime.UtcNow:yyyyMMdd_HHmmss}.log");
+                    _log.LogInformation("FFmpeg log file: {LogPath}", ffmpegLogPath);
                     StreamWriter? ffLog = null;
                     try { ffLog = new StreamWriter(new FileStream(ffmpegLogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true }; } catch { }
                     object logLock = new object();
+                    
+                    // Write the full command to the log file header
+                    try
+                    {
+                        if (ffLog != null)
+                        {
+                            lock (logLock)
+                            {
+                                ffLog.WriteLine($"========== FFmpeg Recording Log ==========");
+                                ffLog.WriteLine($"Job ID: {jobId}");
+                                ffLog.WriteLine($"Start Time: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+                                ffLog.WriteLine($"FFmpeg Path: {ffmpeg}");
+                                ffLog.WriteLine($"Full Command:");
+                                ffLog.WriteLine(fullCommand);
+                                ffLog.WriteLine($"Working Directory: {CurrentDir}");
+                                ffLog.WriteLine($"==========================================");
+                                ffLog.WriteLine();
+                            }
+                        }
+                    }
+                    catch { }
+                    
                     _ = Task.Run(async () =>
                     {
                         try
@@ -202,6 +247,13 @@ namespace Recast.WindowsRecorder.Services
                             while ((_proc != null) && !_proc.HasExited && (line = await _proc.StandardError.ReadLineAsync()) != null)
                             {
                                 try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine(line); } } } catch { }
+                                // Log important ffmpeg messages to application log as well
+                                if (line.Contains("Error", StringComparison.OrdinalIgnoreCase) || 
+                                    line.Contains("Warning", StringComparison.OrdinalIgnoreCase) ||
+                                    line.Contains("failed", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    _log.LogWarning("FFmpeg: {Line}", line);
+                                }
                                 if (line.Contains("Opening 'stream.m3u8' for writing") || line.Contains("hls muxer"))
                                     LiveStart = DateTimeOffset.UtcNow;
                                 if (line.Contains("#EXTINF"))
@@ -547,6 +599,137 @@ namespace Recast.WindowsRecorder.Services
             return count;
         }
 
+        private void LogEffectiveConfig(RecorderOptions? cfg, int width, int height, int framerate)
+        {
+            _log.LogInformation("========== Effective Recording Configuration ==========");
+            _log.LogInformation("Resolution: {Width}x{Height} @ {Framerate}fps", width, height, framerate);
+            
+            // Video encoding
+            var hwAccel = cfg?.HwAccel ?? "none";
+            var encoder = cfg?.VideoEncoder ?? "libx264";
+            _log.LogInformation("HW Accel: {HwAccel}, Encoder: {Encoder}", hwAccel, encoder);
+            _log.LogInformation("Video: preset={Preset} crf={Crf} profile={Profile} pix_fmt={PixFmt} threads={Threads}",
+                cfg?.VideoPreset ?? "veryfast", cfg?.VideoCrf ?? 23, cfg?.VideoProfile ?? "main", 
+                cfg?.VideoPixFmt ?? "yuv420p", cfg?.VideoThreads ?? 2);
+            
+            // Bitrate settings
+            if (cfg?.VideoBitrateK.HasValue == true)
+                _log.LogInformation("Video bitrate: {Bitrate}k maxrate={Maxrate}k bufsize={Bufsize}k",
+                    cfg.VideoBitrateK, cfg?.VideoMaxrateK ?? 0, cfg?.VideoBufsizeK ?? 0);
+            
+            // GOP and HLS
+            var gopSeconds = cfg?.GopSeconds ?? 0;
+            var gopMult = cfg?.GopMult ?? 2;
+            _log.LogInformation("GOP: seconds={GopSec} mult={GopMult} (effective={Effective})",
+                gopSeconds, gopMult, gopSeconds > 0 ? framerate * gopSeconds : framerate * gopMult);
+            _log.LogInformation("HLS: time={Time} list_size={ListSize} flags={Flags} type={Type}",
+                cfg?.HlsTime ?? 2, cfg?.HlsListSize ?? 0, cfg?.HlsFlags ?? "append_list+omit_endlist", cfg?.HlsPlaylistType ?? "event");
+            
+            // FPS mode
+            _log.LogInformation("FPS mode: {FpsMode}, ForceCFR: {ForceCfr}", cfg?.FpsMode ?? "cfr", cfg?.ForceCfr ?? false);
+            
+            // NVENC settings if applicable
+            if (hwAccel == "nvenc" || (encoder?.Contains("nvenc", StringComparison.OrdinalIgnoreCase) == true))
+            {
+                _log.LogInformation("NVENC: preset={Preset} rc={Rc} tune={Tune} cq={Cq} profile={Profile}",
+                    cfg?.NvencPreset ?? cfg?.HwPreset ?? "p4", cfg?.NvencRc ?? cfg?.HwRc ?? "vbr",
+                    cfg?.NvencTune ?? "", cfg?.NvencCq ?? 0, cfg?.NvencProfile ?? "");
+                _log.LogInformation("NVENC AQ: spatial={Spatial} temporal={Temporal} strength={Strength}",
+                    cfg?.NvencSpatialAq ?? 0, cfg?.NvencTemporalAq ?? 0, cfg?.NvencAqStrength ?? 0);
+                _log.LogInformation("NVENC: bframes={Bframes} lookahead={Lookahead} qp={Qp}",
+                    cfg?.NvencBframes ?? 0, cfg?.NvencLookahead ?? 0, cfg?.NvencQp ?? 0);
+            }
+            
+            // Audio
+            _log.LogInformation("Audio: bitrate={Bitrate}k sample_rate={Rate} channels={Ch}",
+                cfg?.AudioBitrateK ?? 128, cfg?.AudioSampleRate ?? 48000, cfg?.AudioChannels ?? 2);
+            _log.LogInformation("Audio device: api={Api} device={Device}", cfg?.AudioApi ?? "auto", cfg?.AudioDevice ?? "auto");
+            
+            // Thread queue sizes
+            _log.LogInformation("Thread queues: video={VideoTqs} audio={AudioTqs}",
+                cfg?.VideoThreadQueueSize ?? 4096, cfg?.AudioThreadQueueSize ?? 4096);
+            
+            _log.LogInformation("=======================================================");
+        }
+
+        private string BuildNvencArgs(RecorderOptions? cfg, string vCodec, string vPixFmt, string vProfile, 
+            int gopSize, int framerate, string vf, string vsyncArg, int aRate, int aBr, int aCh,
+            int hlsTime, int hlsListSize, string hlsFlags, string hlsPlaylistType, string segTmpl, string playlist)
+        {
+            // Get NVENC-specific settings (new options take precedence over legacy)
+            var nvencPreset = cfg?.NvencPreset ?? cfg?.HwPreset;
+            var nvencRc = (cfg?.NvencRc ?? cfg?.HwRc)?.Trim().ToLowerInvariant();
+            var nvencTune = cfg?.NvencTune;
+            var nvencProfile = cfg?.NvencProfile;
+            int? vBit = cfg?.VideoBitrateK;
+            int? vMax = cfg?.VideoMaxrateK;
+            int? vBuf = cfg?.VideoBufsizeK;
+            int? qp = cfg?.NvencQp;
+            int? cq = cfg?.NvencCq;
+            int? bframes = cfg?.NvencBframes;
+            int? lookahead = cfg?.NvencLookahead;
+            int? spatialAq = cfg?.NvencSpatialAq;
+            int? temporalAq = cfg?.NvencTemporalAq;
+            int? aqStrength = cfg?.NvencAqStrength;
+
+            // Build rate control arguments
+            string vRateArgs;
+            if (nvencRc == "cqp" || nvencRc == "constqp")
+            {
+                vRateArgs = qp.HasValue ? $"-rc constqp -qp {qp.Value}" : "-rc vbr";
+            }
+            else if (nvencRc == "cq" || nvencRc == "vbr_hq")
+            {
+                if (cq.HasValue)
+                    vRateArgs = $"-rc vbr -cq {cq.Value}";
+                else if (vBit.HasValue)
+                    vRateArgs = $"-rc vbr -b:v {vBit.Value}k" + (vMax.HasValue ? $" -maxrate {vMax.Value}k" : $" -maxrate {vBit.Value}k") + (vBuf.HasValue ? $" -bufsize {vBuf.Value}k" : "");
+                else
+                    vRateArgs = "-rc vbr";
+            }
+            else if (nvencRc == "cbr")
+            {
+                if (vBit.HasValue)
+                {
+                    var buf = vBuf ?? vBit.Value * 2;
+                    vRateArgs = $"-rc cbr -b:v {vBit.Value}k -maxrate {vBit.Value}k -bufsize {buf}k";
+                }
+                else
+                    vRateArgs = "-rc cbr";
+            }
+            else
+            {
+                // Default: VBR with bitrate if specified
+                vRateArgs = vBit.HasValue 
+                    ? $"-rc vbr -b:v {vBit.Value}k" + (vMax.HasValue ? $" -maxrate {vMax.Value}k" : "") + (vBuf.HasValue ? $" -bufsize {vBuf.Value}k" : "") 
+                    : "-rc vbr";
+            }
+
+            // Build encoder arguments
+            var presetArg = !string.IsNullOrWhiteSpace(nvencPreset) ? $" -preset {nvencPreset}" : "";
+            var tuneArg = !string.IsNullOrWhiteSpace(nvencTune) ? $" -tune {nvencTune}" : "";
+            var profileArg = !string.IsNullOrWhiteSpace(nvencProfile) ? $" -profile:v {nvencProfile}" : $" -profile:v {vProfile}";
+            
+            // Build advanced NVENC options
+            var advancedArgs = "";
+            if (bframes.HasValue && bframes.Value > 0)
+                advancedArgs += $" -bf {bframes.Value}";
+            if (lookahead.HasValue && lookahead.Value > 0)
+                advancedArgs += $" -rc-lookahead {lookahead.Value}";
+            if (spatialAq.HasValue && spatialAq.Value > 0)
+                advancedArgs += " -spatial-aq 1";
+            if (temporalAq.HasValue && temporalAq.Value > 0)
+                advancedArgs += " -temporal-aq 1";
+            if (aqStrength.HasValue && aqStrength.Value > 0)
+                advancedArgs += $" -aq-strength {aqStrength.Value}";
+
+            var vArgs = $"-c:v {vCodec}{presetArg}{tuneArg} -pix_fmt {vPixFmt}{profileArg} {vRateArgs} -g {gopSize}{advancedArgs}";
+            
+            return $"{vsyncArg} -vf \"{vf}\" {vArgs}" +
+                   $" -c:a aac -ar {aRate} -b:a {aBr}k -ac {aCh} -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
+                   $" -hls_time {hlsTime} -hls_list_size {hlsListSize} -hls_flags {hlsFlags} -hls_playlist_type {hlsPlaylistType}" +
+                   $" -hls_segment_filename \"{segTmpl}\" -f hls \"{playlist}\"";
+        }
 
     }
 }

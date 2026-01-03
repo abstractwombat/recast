@@ -130,13 +130,11 @@ Write-Host "  .NET version: $dotnetVersion" -ForegroundColor Green
 # Check if .NET 8.0 runtime is available
 $runtimes = & dotnet --list-runtimes 2>$null
 if ($runtimes -notmatch "Microsoft\.WindowsDesktop\.App 8\.") {
-    Write-Host "WARNING: .NET 8.0 Windows Desktop Runtime not detected." -ForegroundColor Yellow
-    Write-Host "The application requires .NET 8.0 Windows Desktop Runtime." -ForegroundColor Yellow
+    Write-Host "NOTE: .NET 8.0 Windows Desktop Runtime not detected in current session." -ForegroundColor Yellow
+    Write-Host "If you just installed .NET, you may need to reboot or open a new shell." -ForegroundColor Yellow
     Write-Host "Download from: https://dotnet.microsoft.com/download/dotnet/8.0" -ForegroundColor Yellow
-    $continue = Read-Host "Continue anyway? (y/N)"
-    if ($continue -ne "y" -and $continue -ne "Y") {
-        exit 1
-    }
+    Write-Host "" 
+    Write-Host "Continuing with setup - the runtime may already be installed." -ForegroundColor Cyan
 }
 
 # Check Chrome

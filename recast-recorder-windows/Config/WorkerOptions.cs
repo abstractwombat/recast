@@ -2,35 +2,77 @@ namespace Recast.WindowsRecorder.Config
 {
     public class RecorderOptions
     {
+        // Recorder identity
         public string? ManagementServerUrl { get; set; }
         public string? RecorderId { get; set; }
         public string? RecorderHostname { get; set; }
+        public int? PollInterval { get; set; }
+        public int? HeartbeatInterval { get; set; }
         public int? VncPort { get; set; }
         public string? FfmpegPath { get; set; }
+
+        // Audio settings
         public string? AudioApi { get; set; }
         public string? AudioDevice { get; set; }
+        public int? AudioBitrateK { get; set; }
+        public int? AudioSampleRate { get; set; }
+        public int? AudioChannels { get; set; }
+
+        // Recording/capture settings
         public int? Width { get; set; }
         public int? Height { get; set; }
         public int? Framerate { get; set; }
+        public int? VideoThreadQueueSize { get; set; }
+        public int? AudioThreadQueueSize { get; set; }
+
+        // Video encoding settings (software - libx264)
         public string? VideoPreset { get; set; }
         public int? VideoCrf { get; set; }
         public string? VideoProfile { get; set; }
         public string? VideoPixFmt { get; set; }
-        public int? GopMult { get; set; }
-        public int? HlsTime { get; set; }
-        public string? VideoEncoder { get; set; }
-        public string? HwPreset { get; set; }
-        public string? HwRc { get; set; }
+        public int? VideoThreads { get; set; }
         public int? VideoBitrateK { get; set; }
         public int? VideoMaxrateK { get; set; }
         public int? VideoBufsizeK { get; set; }
-        public int? NvencQp { get; set; }
-        public int? NvencCq { get; set; }
-        public int? AudioBitrateK { get; set; }
-        public int? AudioSampleRate { get; set; }
-        public int? AudioChannels { get; set; }
-        public string? OutputDirectory { get; set; }
+
+        // GOP and HLS settings
+        public int? GopMult { get; set; }
+        public int? GopSeconds { get; set; }
+        public int? HlsTime { get; set; }
+        public int? HlsListSize { get; set; }
+        public string? HlsFlags { get; set; }
+        public string? HlsPlaylistType { get; set; }
+
+        // Frame rate mode
+        public string? FpsMode { get; set; }
         public bool? ForceCfr { get; set; }
+
+        // Hardware acceleration
+        public string? HwAccel { get; set; }
+        public string? VideoEncoder { get; set; }
+
+        // NVENC-specific options (used when HwAccel == "nvenc" or VideoEncoder contains "nvenc")
+        public string? NvencPreset { get; set; }
+        public string? NvencRc { get; set; }
+        public string? NvencTune { get; set; }
+        public int? NvencCq { get; set; }
+        public string? NvencProfile { get; set; }
+        public int? NvencBframes { get; set; }
+        public int? NvencLookahead { get; set; }
+        public int? NvencSpatialAq { get; set; }
+        public int? NvencTemporalAq { get; set; }
+        public int? NvencAqStrength { get; set; }
+        public int? NvencQp { get; set; }
+
+        // Legacy alias for NvencPreset
+        public string? HwPreset { get; set; }
+        // Legacy alias for NvencRc
+        public string? HwRc { get; set; }
+
+        // Paths
+        public string? OutputDirectory { get; set; }
+
+        // Finalize settings
         public int? FinalizeHardCapMinutes { get; set; }
         public int? FinalizeStallCapMinutes { get; set; }
         public int? FinalizeLogIntervalSeconds { get; set; }
