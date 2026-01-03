@@ -26,6 +26,7 @@ namespace Recast.WindowsRecorder.Models
         private int _channels = 2;
         private bool _isRecording;
         private DateTimeOffset? _recordingStartTime;
+        private int? _testJobId;
 
         public string ManagementUrl
         {
@@ -117,6 +118,11 @@ namespace Recast.WindowsRecorder.Models
         {
             get => _isRecording;
             set { if (_isRecording != value) { _isRecording = value; OnPropertyChanged(); } }
+        }
+        public int? TestJobId
+        {
+            get => _testJobId;
+            set { if (_testJobId != value) { _testJobId = value; OnPropertyChanged(); } }
         }
         public int RecordingElapsedSeconds
         {

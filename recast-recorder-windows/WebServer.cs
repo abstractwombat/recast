@@ -306,12 +306,20 @@ namespace Recast.WindowsRecorder
                 }
             });
 
-            app.MapGet("/api/test_recording/status", (RecorderState state) =>
+            app.MapGet("/api/test_recording/status", (RecorderState state, RecordingManager rec) =>
             {
+                string? liveUrl = null;
+                if (state.IsRecording && state.TestJobId.HasValue)
+                {
+                    liveUrl = $"/live?job_id={state.TestJobId.Value}";
+                }
                 return Results.Json(new
                 {
                     active = state.IsRecording,
-                    elapsed_seconds = state.RecordingElapsedSeconds
+                    elapsed_seconds = state.RecordingElapsedSeconds,
+                    job_id = state.TestJobId,
+                    live_url = liveUrl,
+                    hls_ready = rec.IsReady
                 });
             });
 
@@ -331,6 +339,7 @@ namespace Recast.WindowsRecorder
 
                     state.StartRecording();
                     var jobId = (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() % 100000);
+                    state.TestJobId = jobId;
                     var cfg = options.CurrentValue ?? new RecorderOptions();
                     var width = cfg.Width ?? state.ScreenWidth;
                     var height = cfg.Height ?? state.ScreenHeight;
@@ -339,10 +348,13 @@ namespace Recast.WindowsRecorder
                     if (!ok)
                     {
                         state.StopRecording();
+                        state.TestJobId = null;
                         return Results.Json(new { status = "error", message = "ffmpeg failed to start" }, statusCode: 500);
                     }
 
-                    return Results.Json(new { status = "success", message = "Recording started", job_id = jobId });
+                    // Build live stream URL
+                    var liveUrl = $"/live?job_id={jobId}";
+                    return Results.Json(new { status = "success", message = "Recording started", job_id = jobId, live_url = liveUrl });
                 }
                 catch (Exception ex)
                 {
@@ -350,17 +362,27 @@ namespace Recast.WindowsRecorder
                 }
             });
 
-            app.MapPost("/api/test_recording/stop", async (HttpContext ctx, RecorderState state, RecordingManager rec) =>
+            app.MapPost("/api/test_recording/stop", async (HttpContext ctx, RecorderState state, RecordingManager rec, SessionManager sm) =>
             {
                 try
                 {
                     if (!state.IsRecording)
                         return Results.Json(new { status = "error", message = "No recording in progress" }, statusCode: 400);
 
+                    var payload = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object>>() ?? new();
+                    var stopBrowser = payload.ContainsKey("stop_browser") && payload["stop_browser"]?.ToString() == "true";
+
                     var elapsed = state.StopRecording();
+                    state.TestJobId = null;
                     await rec.StopAsync();
 
-                    return Results.Json(new { status = "success", elapsed_seconds = elapsed });
+                    // Optionally stop the browser session
+                    if (stopBrowser)
+                    {
+                        await sm.StopAllAsync();
+                    }
+
+                    return Results.Json(new { status = "success", elapsed_seconds = elapsed, browser_stopped = stopBrowser });
                 }
                 catch (Exception ex)
                 {

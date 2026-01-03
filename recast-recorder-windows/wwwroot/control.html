@@ -254,6 +254,10 @@
         <select id="testController"></select>
         <button class="btn" id="btnStartTest">Start Recording</button>
         <button class="btn stop" id="btnStopTest">Stop Recording</button>
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 13px;">
+          <input type="checkbox" id="stopBrowserOnStop" />
+          Stop browser on stop
+        </label>
       </div>
       
       <div class="status" id="testStatus"></div>
@@ -268,6 +272,10 @@
             <tr>
               <td><strong>Elapsed</strong></td>
               <td id="testRecordingElapsed">-</td>
+            </tr>
+            <tr>
+              <td><strong>Live Stream</strong></td>
+              <td id="testLiveLink">-</td>
             </tr>
           </tbody>
         </table>
@@ -606,21 +614,35 @@
         const infoDiv = document.getElementById('testInfo');
         const statusEl = document.getElementById('testRecordingStatus');
         const elapsedEl = document.getElementById('testRecordingElapsed');
+        const liveLinkEl = document.getElementById('testLiveLink');
         const startBtn = document.getElementById('btnStartTest');
         const stopBtn = document.getElementById('btnStopTest');
         
         if (data.active) {
           infoDiv.style.display = 'block';
-          statusEl.innerHTML = '<span class="badge on">RECORDING</span>';
+          const hlsStatus = data.hls_ready ? ' (HLS ready)' : ' (waiting for HLS...)';
+          statusEl.innerHTML = '<span class="badge on">RECORDING</span>' + hlsStatus;
           const mins = Math.floor(data.elapsed_seconds / 60);
           const secs = data.elapsed_seconds % 60;
           elapsedEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+          
+          // Show live stream link
+          if (data.live_url && data.hls_ready) {
+            const fullUrl = window.location.origin + data.live_url;
+            liveLinkEl.innerHTML = `<a href="${data.live_url}" target="_blank">${fullUrl}</a>`;
+          } else if (data.live_url) {
+            liveLinkEl.textContent = 'Waiting for stream to be ready...';
+          } else {
+            liveLinkEl.textContent = '-';
+          }
+          
           startBtn.disabled = true;
           stopBtn.disabled = false;
         } else {
           infoDiv.style.display = 'none';
           statusEl.textContent = '-';
           elapsedEl.textContent = '-';
+          liveLinkEl.textContent = '-';
           startBtn.disabled = false;
           stopBtn.disabled = true;
         }
@@ -645,7 +667,11 @@
         });
         const data = await res.json();
         if (res.ok) {
-          document.getElementById('testStatus').textContent = 'Recording started!';
+          let msg = 'Recording started!';
+          if (data.live_url) {
+            msg += ` Live stream will be available at: ${window.location.origin}${data.live_url}`;
+          }
+          document.getElementById('testStatus').innerHTML = msg;
         } else {
           document.getElementById('testStatus').textContent = 'Error: ' + (data.message || 'Failed to start');
         }
@@ -657,21 +683,26 @@
 
     async function stopTestRecording() {
       document.getElementById('testStatus').textContent = 'Stopping...';
+      const stopBrowser = document.getElementById('stopBrowserOnStop').checked;
       
       try {
         const res = await fetch('/api/test_recording/stop', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ stop_browser: stopBrowser ? 'true' : 'false' }),
         });
         const data = await res.json();
         if (res.ok) {
           let msg = `Recording stopped (${data.elapsed_seconds}s)`;
+          if (data.browser_stopped) {
+            msg += ' - Browser session stopped';
+          }
           document.getElementById('testStatus').textContent = msg;
         } else {
           document.getElementById('testStatus').textContent = 'Error: ' + (data.message || 'Failed to stop');
         }
         await refreshTestStatus();
+        await refresh(); // Refresh session status too
       } catch (e) {
         document.getElementById('testStatus').textContent = 'Error: ' + e.message;
       }
