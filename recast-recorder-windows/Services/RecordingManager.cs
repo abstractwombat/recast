@@ -21,10 +21,10 @@ namespace Recast.WindowsRecorder.Services
         public DateTimeOffset? LiveStart { get; private set; }
         public int SegmentCount { get; private set; }
 
-        private readonly IOptions<RecorderOptions>? _options;
+        private readonly IOptionsMonitor<RecorderOptions>? _options;
         private volatile bool _finalizing;
 
-        public RecordingManager(ILogger<RecordingManager> log, IOptions<RecorderOptions>? options = null)
+        public RecordingManager(ILogger<RecordingManager> log, IOptionsMonitor<RecorderOptions>? options = null)
         {
             _log = log;
             _options = options;
@@ -37,7 +37,7 @@ namespace Recast.WindowsRecorder.Services
         public async Task<bool> StartAsync(int jobId, int width = 1920, int height = 1080, int framerate = 30)
         {
             await StopAsync();
-            var cfg = _options?.Value;
+            var cfg = _options?.CurrentValue;
             width = cfg?.Width ?? width;
             height = cfg?.Height ?? height;
             framerate = cfg?.Framerate ?? framerate;
@@ -49,7 +49,7 @@ namespace Recast.WindowsRecorder.Services
             try { File.Delete(playlist); } catch { }
             SegmentCount = 0;
 
-            string ffmpeg = _options?.Value?.FfmpegPath
+            string ffmpeg = _options?.CurrentValue?.FfmpegPath
                              ?? Environment.GetEnvironmentVariable("FFMPEG")
                              ?? "ffmpeg";
 
@@ -156,8 +156,8 @@ namespace Recast.WindowsRecorder.Services
                 $"{tqs} -rtbufsize 512M -f gdigrab -framerate {framerate} -draw_mouse 1 -i desktop -an {outArgs}",
             };
 
-            var audioApi = _options?.Value?.AudioApi?.Trim().ToLowerInvariant();
-            var audioDev = _options?.Value?.AudioDevice?.Trim();
+            var audioApi = _options?.CurrentValue?.AudioApi?.Trim().ToLowerInvariant();
+            var audioDev = _options?.CurrentValue?.AudioDevice?.Trim();
 
             // Audio input args: use wallclock timestamps for dshow to sync with video capture time
             // Audio input: delay audio by ~100ms to compensate for audio arriving ahead of video frames
@@ -346,10 +346,10 @@ namespace Recast.WindowsRecorder.Services
             {
                 var playlist = CurrentPlaylistPath;
                 if (string.IsNullOrWhiteSpace(playlist) || !File.Exists(playlist)) return null;
-                string ffmpeg = _options?.Value?.FfmpegPath
+                string ffmpeg = _options?.CurrentValue?.FfmpegPath
                                  ?? Environment.GetEnvironmentVariable("FFMPEG")
                                  ?? "ffmpeg";
-                var cfg = _options?.Value;
+                var cfg = _options?.CurrentValue;
                 var outputRoot = cfg != null && !string.IsNullOrWhiteSpace(cfg.OutputDirectory)
                     ? (Path.IsPathRooted(cfg.OutputDirectory!) ? cfg.OutputDirectory! : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, cfg.OutputDirectory!)))
                     : Path.Combine(LiveRoot, "..", "recordings");
@@ -438,7 +438,7 @@ namespace Recast.WindowsRecorder.Services
                             });
 
                             var pollCts = new CancellationTokenSource();
-                            var logInterval = Math.Max(1, (_options?.Value?.FinalizeLogIntervalSeconds ?? 5));
+                            var logInterval = Math.Max(1, (_options?.CurrentValue?.FinalizeLogIntervalSeconds ?? 5));
                             var lastSzTs = DateTime.UtcNow;
                             var pollTask = Task.Run(async () =>
                             {
@@ -480,8 +480,8 @@ namespace Recast.WindowsRecorder.Services
                                 }
                             });
 
-                            var hardCap = TimeSpan.FromMinutes(_options?.Value?.FinalizeHardCapMinutes ?? 45);
-                            var stallCap = TimeSpan.FromMinutes(_options?.Value?.FinalizeStallCapMinutes ?? 2);
+                            var hardCap = TimeSpan.FromMinutes(_options?.CurrentValue?.FinalizeHardCapMinutes ?? 45);
+                            var stallCap = TimeSpan.FromMinutes(_options?.CurrentValue?.FinalizeStallCapMinutes ?? 2);
                             var startAt = DateTime.UtcNow;
                             while (!pConcat.HasExited)
                             {
