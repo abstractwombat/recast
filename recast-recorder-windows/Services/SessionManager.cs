@@ -383,36 +383,116 @@ namespace Recast.WindowsRecorder.Services
                     });
                 }
                 catch { }
+
+                // Enter fullscreen using robust multi-strategy approach (ported from Linux videojs controller)
+                // Strategy 1: Try native video fullscreen API first (most reliable)
                 bool fsOk = false;
-                try { new Actions(driver).MoveToElement(container).Perform(); Thread.Sleep(200); } catch { }
                 try
                 {
-                    var waitFs = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(200));
-                    var fsBtn = waitFs.Until(d =>
-                    {
-                        try { return d.FindElement(By.CssSelector("button.vjs-fullscreen-control, button[title*='Full'], button[aria-label*='Full']")); } catch { return null; }
-                    });
-                    if (fsBtn != null)
-                    {
-                        try { ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].scrollIntoView({block:'center',inline:'center'});", fsBtn); } catch { }
-                        fsBtn.Click();
-                        fsOk = true;
-                    }
+                    var fsResult = ((IJavaScriptExecutor)driver).ExecuteScript(@"
+                        (function() {
+                            var video = document.querySelector('video');
+                            if (!video) return 'no_video';
+                            
+                            // Try to fullscreen the video element directly
+                            if (video.requestFullscreen) {
+                                video.requestFullscreen();
+                                return 'success_standard';
+                            } else if (video.webkitRequestFullscreen) {
+                                video.webkitRequestFullscreen();
+                                return 'success_webkit';
+                            } else if (video.webkitEnterFullscreen) {
+                                // iOS Safari
+                                video.webkitEnterFullscreen();
+                                return 'success_webkit_enter';
+                            } else if (video.msRequestFullscreen) {
+                                video.msRequestFullscreen();
+                                return 'success_ms';
+                            }
+                            return 'no_api';
+                        })();
+                    ");
+                    var result = fsResult?.ToString() ?? "";
+                    if (result.StartsWith("success")) fsOk = true;
                 }
                 catch { }
+
+                // Strategy 2: Fullscreen the document body (fills screen but keeps page layout)
                 if (!fsOk)
                 {
                     try
                     {
-                        ((IJavaScriptExecutor)driver).ExecuteScript("(function(){var el=document.querySelector('.video-js')||document.querySelector('video');if(!el)return false;var t=el.closest('.video-js')||el;if(t.requestFullscreen){t.requestFullscreen();return true;}if(t.webkitRequestFullscreen){t.webkitRequestFullscreen();return true;}if(t.msRequestFullscreen){t.msRequestFullscreen();return true;}return false;})()");
+                        ((IJavaScriptExecutor)driver).ExecuteScript(@"
+                            (function() {
+                                var body = document.body || document.documentElement;
+                                if (body.requestFullscreen) {
+                                    body.requestFullscreen();
+                                } else if (body.webkitRequestFullscreen) {
+                                    body.webkitRequestFullscreen();
+                                } else if (body.msRequestFullscreen) {
+                                    body.msRequestFullscreen();
+                                }
+                            })();
+                        ");
                         fsOk = true;
                     }
                     catch { }
                 }
+
+                // Strategy 3: Try the site's fullscreen button
+                if (!fsOk)
+                {
+                    try { new Actions(driver).MoveToElement(container).Perform(); Thread.Sleep(200); } catch { }
+                    try
+                    {
+                        var waitFs = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(200));
+                        var fsBtn = waitFs.Until(d =>
+                        {
+                            try { return d.FindElement(By.CssSelector("button.vjs-fullscreen-control, button[title*='Full'], button[aria-label*='Full']")); } catch { return null; }
+                        });
+                        if (fsBtn != null)
+                        {
+                            try { ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].scrollIntoView({block:'center',inline:'center'});", fsBtn); } catch { }
+                            fsBtn.Click();
+                            fsOk = true;
+                        }
+                    }
+                    catch { }
+                }
+
+                // Strategy 4: Try keyboard 'f' shortcut
+                if (!fsOk)
+                {
+                    try
+                    {
+                        ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].focus();", container);
+                        Thread.Sleep(100);
+                        container.Click();
+                        Thread.Sleep(100);
+                        container.SendKeys("f");
+                        fsOk = true;
+                    }
+                    catch { }
+                }
+
+                // Strategy 5: Double-click as last resort
                 if (!fsOk)
                 {
                     try { new Actions(driver).MoveToElement(container).DoubleClick().Perform(); fsOk = true; } catch { }
                 }
+
+                // Wait briefly to confirm fullscreen state
+                try
+                {
+                    var waitFsConfirm = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(200));
+                    waitFsConfirm.Until(d =>
+                    {
+                        try { return (bool)(((IJavaScriptExecutor)d).ExecuteScript("return !!document.fullscreenElement") ?? false); } catch { return true; }
+                    });
+                }
+                catch { }
+
+                // Unmute and set volume
                 try { ((IJavaScriptExecutor)driver).ExecuteScript("(function(){Array.from(document.querySelectorAll('video')).forEach(v=>{try{v.muted=false;v.volume=1.0;v.play().catch(()=>{});}catch(e){}})})()"); } catch { }
                 return true;
             }
