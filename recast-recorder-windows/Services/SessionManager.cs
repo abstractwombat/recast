@@ -88,7 +88,7 @@ namespace Recast.WindowsRecorder.Services
                         {
                             if (controller == "videojs")
                             {
-                                try { PlayAndFullscreenVideoJs(driver); } catch { }
+                                try { PlayAndFullscreenVideoJs(driver, _log); } catch { }
                             }
                             else
                             {
@@ -218,7 +218,7 @@ namespace Recast.WindowsRecorder.Services
                                                 log.LogInformation("[Watchdog] Not in fullscreen, attempting to restore (last attempt {Ago:F0}s ago)", timeSinceLastFsAttempt.TotalSeconds);
                                                 lastFullscreenAttempt = DateTime.UtcNow;
                                                 inVideoFrame = false; // will need to re-find frame after this
-                                                try { PlayAndFullscreenVideoJs(driver); } catch { }
+                                                try { PlayAndFullscreenVideoJs(driver, log); } catch { }
                                             }
                                         }
                                         catch (Exception fsEx) 
@@ -293,7 +293,7 @@ namespace Recast.WindowsRecorder.Services
             log.LogInformation("[Watchdog] Attempting to restore playback and fullscreen");
             try 
             { 
-                PlayAndFullscreenVideoJs(driver); 
+                PlayAndFullscreenVideoJs(driver, log); 
                 log.LogInformation("[Watchdog] Stall recovery completed");
             } 
             catch (Exception ex) 
@@ -325,26 +325,38 @@ namespace Recast.WindowsRecorder.Services
             return false;
         }
 
-        private static bool PlayAndFullscreenVideoJs(IWebDriver driver)
+        private static bool PlayAndFullscreenVideoJs(IWebDriver driver, ILogger? log = null)
         {
             try
             {
+                log?.LogInformation("[VideoJS] Starting PlayAndFullscreenVideoJs");
+                
                 try { SwitchToFrameWithVideo(driver); } catch { }
                 IWebElement player = null;
                 try
                 {
+                    log?.LogDebug("[VideoJS] Waiting for player element (.video-js, .vjs-controls-enabled)");
                     var wait = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(200));
                     player = wait.Until(d =>
                     {
                         try { return d.FindElement(By.CssSelector(".video-js, .vjs-controls-enabled")); } catch { return null; }
                     });
                 }
-                catch { }
-                if (player == null) return false;
+                catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Failed to find player element"); }
+                
+                if (player == null)
+                {
+                    log?.LogWarning("[VideoJS] Player element not found, aborting");
+                    return false;
+                }
+                log?.LogInformation("[VideoJS] Player element found");
+                
                 IWebElement container = player;
                 try { container = player.FindElement(By.XPath("./ancestor-or-self::div[contains(@class,'video-js')]")); } catch { }
+                
                 try
                 {
+                    log?.LogDebug("[VideoJS] Waiting for loader to disappear");
                     var waitLoader = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(200));
                     waitLoader.Until(d =>
                     {
@@ -358,8 +370,10 @@ namespace Recast.WindowsRecorder.Services
                     });
                 }
                 catch { }
+                
                 try
                 {
+                    log?.LogDebug("[VideoJS] Looking for big play button");
                     var waitBtn = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(200));
                     var playBtn = waitBtn.Until(d =>
                     {
@@ -370,25 +384,39 @@ namespace Recast.WindowsRecorder.Services
                         }
                         catch { return null; }
                     });
-                    if (playBtn != null) playBtn.Click();
-                    else { try { container.Click(); } catch { } }
+                    if (playBtn != null)
+                    {
+                        log?.LogInformation("[VideoJS] Clicking big play button");
+                        playBtn.Click();
+                    }
+                    else
+                    {
+                        log?.LogInformation("[VideoJS] No play button found, clicking container");
+                        try { container.Click(); } catch { }
+                    }
                 }
                 catch { try { container.Click(); } catch { } }
+                
                 try
                 {
+                    log?.LogDebug("[VideoJS] Waiting for video readyState > 0");
                     var waitReady = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(15), TimeSpan.FromMilliseconds(200));
                     waitReady.Until(d =>
                     {
                         try { return (bool)(((IJavaScriptExecutor)d).ExecuteScript("return document.querySelector('video') && document.querySelector('video').readyState > 0") ?? false); } catch { return true; }
                     });
+                    log?.LogInformation("[VideoJS] Video is ready (readyState > 0)");
                 }
-                catch { }
+                catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Timeout waiting for video readyState"); }
 
                 // Enter fullscreen using robust multi-strategy approach (ported from Linux videojs controller)
                 // Strategy 1: Try native video fullscreen API first (most reliable)
+                log?.LogInformation("[VideoJS] Starting fullscreen sequence");
                 bool fsOk = false;
+                string fsStrategy = "none";
                 try
                 {
+                    log?.LogInformation("[VideoJS] Strategy 1: Trying native video.requestFullscreen()");
                     var fsResult = ((IJavaScriptExecutor)driver).ExecuteScript(@"
                         (function() {
                             var video = document.querySelector('video');
@@ -413,15 +441,21 @@ namespace Recast.WindowsRecorder.Services
                         })();
                     ");
                     var result = fsResult?.ToString() ?? "";
-                    if (result.StartsWith("success")) fsOk = true;
+                    log?.LogInformation("[VideoJS] Strategy 1 result: {Result}", result);
+                    if (result.StartsWith("success"))
+                    {
+                        fsOk = true;
+                        fsStrategy = "native_video_" + result;
+                    }
                 }
-                catch { }
+                catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Strategy 1 failed with exception"); }
 
                 // Strategy 2: Fullscreen the document body (fills screen but keeps page layout)
                 if (!fsOk)
                 {
                     try
                     {
+                        log?.LogInformation("[VideoJS] Strategy 2: Trying document.body.requestFullscreen()");
                         ((IJavaScriptExecutor)driver).ExecuteScript(@"
                             (function() {
                                 var body = document.body || document.documentElement;
@@ -435,13 +469,16 @@ namespace Recast.WindowsRecorder.Services
                             })();
                         ");
                         fsOk = true;
+                        fsStrategy = "document_body";
+                        log?.LogInformation("[VideoJS] Strategy 2 executed (document body fullscreen)");
                     }
-                    catch { }
+                    catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Strategy 2 failed with exception"); }
                 }
 
                 // Strategy 3: Try the site's fullscreen button
                 if (!fsOk)
                 {
+                    log?.LogInformation("[VideoJS] Strategy 3: Looking for fullscreen button");
                     try { new Actions(driver).MoveToElement(container).Perform(); Thread.Sleep(200); } catch { }
                     try
                     {
@@ -452,12 +489,18 @@ namespace Recast.WindowsRecorder.Services
                         });
                         if (fsBtn != null)
                         {
+                            log?.LogInformation("[VideoJS] Strategy 3: Found fullscreen button, clicking");
                             try { ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].scrollIntoView({block:'center',inline:'center'});", fsBtn); } catch { }
                             fsBtn.Click();
                             fsOk = true;
+                            fsStrategy = "fullscreen_button";
+                        }
+                        else
+                        {
+                            log?.LogWarning("[VideoJS] Strategy 3: Fullscreen button not found");
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Strategy 3 failed with exception"); }
                 }
 
                 // Strategy 4: Try keyboard 'f' shortcut
@@ -465,38 +508,73 @@ namespace Recast.WindowsRecorder.Services
                 {
                     try
                     {
+                        log?.LogInformation("[VideoJS] Strategy 4: Trying keyboard 'f' shortcut");
                         ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].focus();", container);
                         Thread.Sleep(100);
                         container.Click();
                         Thread.Sleep(100);
                         container.SendKeys("f");
                         fsOk = true;
+                        fsStrategy = "keyboard_f";
+                        log?.LogInformation("[VideoJS] Strategy 4 executed (keyboard 'f')");
                     }
-                    catch { }
+                    catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Strategy 4 failed with exception"); }
                 }
 
                 // Strategy 5: Double-click as last resort
                 if (!fsOk)
                 {
-                    try { new Actions(driver).MoveToElement(container).DoubleClick().Perform(); fsOk = true; } catch { }
+                    try
+                    {
+                        log?.LogInformation("[VideoJS] Strategy 5: Trying double-click");
+                        new Actions(driver).MoveToElement(container).DoubleClick().Perform();
+                        fsOk = true;
+                        fsStrategy = "double_click";
+                        log?.LogInformation("[VideoJS] Strategy 5 executed (double-click)");
+                    }
+                    catch (Exception ex) { log?.LogWarning(ex, "[VideoJS] Strategy 5 failed with exception"); }
                 }
 
                 // Wait briefly to confirm fullscreen state
+                bool confirmedFullscreen = false;
                 try
                 {
+                    log?.LogDebug("[VideoJS] Waiting to confirm fullscreen state");
                     var waitFsConfirm = new WebDriverWait(new SystemClock(), driver, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(200));
                     waitFsConfirm.Until(d =>
                     {
                         try { return (bool)(((IJavaScriptExecutor)d).ExecuteScript("return !!document.fullscreenElement") ?? false); } catch { return true; }
                     });
+                    confirmedFullscreen = true;
                 }
                 catch { }
+                
+                // Check final fullscreen state
+                try
+                {
+                    var finalFsState = ((IJavaScriptExecutor)driver).ExecuteScript("return !!document.fullscreenElement");
+                    confirmedFullscreen = finalFsState is bool b && b;
+                }
+                catch { }
+                
+                log?.LogInformation("[VideoJS] Fullscreen sequence complete: strategy={Strategy}, confirmed={Confirmed}", fsStrategy, confirmedFullscreen);
 
                 // Unmute and set volume
-                try { ((IJavaScriptExecutor)driver).ExecuteScript("(function(){Array.from(document.querySelectorAll('video')).forEach(v=>{try{v.muted=false;v.volume=1.0;v.play().catch(()=>{});}catch(e){}})})()"); } catch { }
+                try
+                {
+                    log?.LogDebug("[VideoJS] Setting volume and unmuting");
+                    ((IJavaScriptExecutor)driver).ExecuteScript("(function(){Array.from(document.querySelectorAll('video')).forEach(v=>{try{v.muted=false;v.volume=1.0;v.play().catch(()=>{});}catch(e){}})})()");
+                }
+                catch { }
+                
+                log?.LogInformation("[VideoJS] PlayAndFullscreenVideoJs completed successfully");
                 return true;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                log?.LogError(ex, "[VideoJS] PlayAndFullscreenVideoJs failed with exception");
+                return false;
+            }
         }
     }
 }

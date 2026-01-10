@@ -113,10 +113,12 @@ namespace Recast.WindowsRecorder
                 foreach (var name in sm.ControllerNames)
                 {
                     var s = sm.Get(name);
+                    var isActive = s != null && s.Mode != "none";
                     map[name] = new
                     {
                         display = "windows",
                         mode = s?.Mode ?? "none",
+                        active = isActive,
                         vnc_running = vnc.IsRunning,
                         error = false,
                         error_message = (string?)null,

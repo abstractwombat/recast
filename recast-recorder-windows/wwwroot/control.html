@@ -294,42 +294,77 @@
       return res.json();
     }
 
-    function updateSessionDisplay(currentControllerInfo) {
+    function updateSessionDisplay(controllersData) {
       const tbody = document.querySelector('#sessionTable tbody');
       const testControllerSelect = document.getElementById('testController');
       const sessionStatus = document.getElementById('sessionStatus');
+      const controllerStatus = document.getElementById('controllerStatus');
       
       while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
       
+      const controllers = controllersData?.controllers || {};
+      const names = Object.keys(controllers).sort();
+      
+      // Find any active controller info for VNC status
+      let vncRunning = false;
+      let vncPort = null;
+      const activeControllers = [];
+      
+      for (const name of names) {
+        const info = controllers[name];
+        if (info?.vnc_running) {
+          vncRunning = true;
+          vncPort = info.vnc_port;
+        }
+        if (info?.active) {
+          activeControllers.push({ name, mode: info.mode });
+        }
+      }
+      
       const row = document.createElement('tr');
-      const browserStatus = '<span class="badge on">RUNNING</span>';
-      const vncRunning = !!currentControllerInfo?.vnc_running;
+      const browserStatus = activeControllers.length > 0 
+        ? '<span class="badge on">RUNNING</span>' 
+        : '<span class="badge off">OFF</span>';
       const vncStatus = vncRunning ? '<span class="badge on">RUNNING</span>' : '<span class="badge off">OFF</span>';
-      const vncPort = currentControllerInfo?.vnc_port || '-';
       row.innerHTML = `
         <td>${browserStatus}</td>
         <td>${vncStatus}</td>
-        <td>${vncPort}</td>
+        <td>${vncPort || '-'}</td>
       `;
       tbody.appendChild(row);
       
-      if (vncRunning && currentControllerInfo?.vnc_port) {
+      if (vncRunning && vncPort) {
         const host = window.location.hostname;
-        const port = currentControllerInfo.vnc_port;
-        const url = `vnc://${host}:${port}`;
-        sessionStatus.innerHTML = `Connect with: <strong>${host}:${port}</strong> · <a href="${url}">${url}</a>`;
+        const url = `vnc://${host}:${vncPort}`;
+        sessionStatus.innerHTML = `Connect with: <strong>${host}:${vncPort}</strong> · <a href="${url}">${url}</a>`;
       } else {
         sessionStatus.textContent = '';
       }
       
-      // Update test controller dropdown
+      // Show active controllers in controller status
+      if (activeControllers.length > 0) {
+        const activeList = activeControllers.map(c => `${c.name} (${c.mode})`).join(', ');
+        controllerStatus.innerHTML = `<span class="success">Active: ${activeList}</span>`;
+      } else {
+        controllerStatus.textContent = '';
+      }
+      
+      // Update test controller dropdown with active controllers
       while (testControllerSelect.firstChild) testControllerSelect.removeChild(testControllerSelect.firstChild);
-      const controllerSel = document.getElementById('controller');
-      const activeOpt = document.createElement('option');
-      activeOpt.value = controllerSel.value || '';
-      activeOpt.textContent = controllerSel.value || '(no controllers)';
-      activeOpt.disabled = !activeOpt.value;
-      testControllerSelect.appendChild(activeOpt);
+      if (activeControllers.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no active sessions)';
+        opt.disabled = true;
+        testControllerSelect.appendChild(opt);
+      } else {
+        for (const c of activeControllers) {
+          const opt = document.createElement('option');
+          opt.value = c.name;
+          opt.textContent = `${c.name} (${c.mode})`;
+          testControllerSelect.appendChild(opt);
+        }
+      }
     }
 
     function populateControllers(data) {
@@ -363,11 +398,7 @@
       try {
         const controllersData = await fetchControllers();
         populateControllers(controllersData);
-        const sel = document.getElementById('controller');
-        const controllers = controllersData.controllers || {};
-        const current = sel.value ? controllers[sel.value] : null;
-        const fallback = current || (Object.keys(controllers).length > 0 ? controllers[Object.keys(controllers)[0]] : null);
-        updateSessionDisplay(fallback);
+        updateSessionDisplay(controllersData);
         await refreshTestStatus();
       } catch (e) {
         console.error('Failed to refresh', e);
