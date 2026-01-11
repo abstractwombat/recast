@@ -760,10 +760,11 @@ namespace Recast.WindowsRecorder.Services
             if (aqStrength.HasValue && aqStrength.Value > 0)
                 advancedArgs += $" -aq-strength {aqStrength.Value}";
 
-            var vArgs = $"-c:v {vCodec}{presetArg}{tuneArg} -pix_fmt {vPixFmt}{profileArg} {vRateArgs} -g {gopSize}{advancedArgs}";
-            
-            // Skip -vf for ddagrab since d3d11 output goes directly to NVENC without CPU filter chain
+            // Skip -vf and -pix_fmt for ddagrab since d3d11 output goes directly to NVENC without CPU filter chain
+            var pixFmtArg = (captureMethod == "ddagrab") ? "" : $" -pix_fmt {vPixFmt}";
             var vfArg = (captureMethod == "ddagrab") ? "" : $" -vf \"{vf}\"";
+            
+            var vArgs = $"-c:v {vCodec}{presetArg}{tuneArg}{pixFmtArg}{profileArg} {vRateArgs} -g {gopSize}{advancedArgs}";
             
             return $"{vsyncArg}{vfArg} {vArgs}" +
                    $" -c:a aac -ar {aRate} -b:a {aBr}k -ac {aCh} -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
