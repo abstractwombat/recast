@@ -15,7 +15,7 @@
 param(
     [switch]$SkipBuild,
     [switch]$SkipFirewall,
-    [switch]$SkipService,
+    [switch]$SkipScheduledTask,
     [string]$InstallPath = "C:\Program Files\Recast\WindowsRecorder"
 )
 
@@ -341,61 +341,56 @@ if (-not $SkipFirewall) {
     Write-Host "  Skipping firewall configuration (--SkipFirewall specified)" -ForegroundColor Yellow
 }
 
-# Step 7: Create Windows Service (optional)
+# Step 7: Create Scheduled Task (optional)
 Write-Host ""
-Write-Host "Step 7: Windows Service setup..." -ForegroundColor Cyan
-
-if (-not $SkipService) {
-    $serviceName = "RecastWindowsRecorder"
+Write-Host "Step 7: Task Scheduler setup..." -ForegroundColor Cyan
+ 
+if (-not $SkipScheduledTask) {
+    $taskName = "RecastWindowsRecorder"
     $exePath = Join-Path $InstallPath "Recast.WindowsRecorder.exe"
-    
-    # Check if service already exists
-    $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-    
-    if ($existingService) {
-        Write-Host "  Service '$serviceName' already exists." -ForegroundColor Yellow
-        $reinstall = Read-Host "  Reinstall service? (y/N)"
+    $currentUser = "$env:USERDOMAIN\\$env:USERNAME"
+ 
+    # Check if task already exists
+    $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+ 
+    if ($existingTask) {
+        Write-Host "  Scheduled Task '$taskName' already exists." -ForegroundColor Yellow
+        $reinstall = Read-Host "  Reinstall Scheduled Task? (y/N)"
         if ($reinstall -eq "y" -or $reinstall -eq "Y") {
-            Write-Host "  Stopping and removing existing service..."
-            Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-            & sc.exe delete $serviceName | Out-Null
-            Start-Sleep -Seconds 2
+            Write-Host "  Removing existing Scheduled Task..."
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         } else {
-            Write-Host "  Keeping existing service configuration." -ForegroundColor Green
-            $SkipService = $true
+            Write-Host "  Keeping existing Scheduled Task configuration." -ForegroundColor Green
+            $SkipScheduledTask = $true
         }
     }
-    
-    if (-not $SkipService) {
-        Write-Host "  Creating Windows service..."
-        
-        # Create the service using sc.exe
-        $scArgs = "create `"$serviceName`" binPath= `"$exePath`" start= auto DisplayName= `"Recast Windows Recorder`""
-        $result = & cmd.exe /c "sc.exe $scArgs" 2>&1
-        
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  Service created successfully!" -ForegroundColor Green
-            
-            # Set service description
-            & sc.exe description $serviceName "Recast Windows Recorder - Records browser sessions and streams via VNC" | Out-Null
-            
-            # Configure service recovery options (restart on failure)
-            & sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
-            
-            Write-Host "  Service configured with auto-restart on failure" -ForegroundColor Green
-            
-            $startNow = Read-Host "  Start service now? (Y/n)"
+ 
+    if (-not $SkipScheduledTask) {
+        try {
+            Write-Host "  Creating Scheduled Task (at logon, restart on failure)..."
+ 
+            $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $InstallPath
+            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+            $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType InteractiveToken -RunLevel LeastPrivilege
+            $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+ 
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Recast Windows Recorder - Starts at logon and restarts on failure" | Out-Null
+ 
+            Write-Host "  Scheduled Task created successfully!" -ForegroundColor Green
+            Write-Host "  Restart policy: 3 restarts, 1 minute interval" -ForegroundColor Green
+ 
+            $startNow = Read-Host "  Start recorder now? (Y/n)"
             if ($startNow -ne "n" -and $startNow -ne "N") {
-                Start-Service -Name $serviceName
-                Write-Host "  Service started!" -ForegroundColor Green
+                Start-ScheduledTask -TaskName $taskName
+                Write-Host "  Recorder started via Scheduled Task!" -ForegroundColor Green
             }
-        } else {
-            Write-Host "  WARNING: Could not create service: $result" -ForegroundColor Yellow
-            Write-Host "  You can run the application manually or use NSSM for service management." -ForegroundColor Yellow
+        } catch {
+            Write-Host "  WARNING: Could not create Scheduled Task: $_" -ForegroundColor Yellow
+            Write-Host "  You can run the application manually or add it to the Startup folder." -ForegroundColor Yellow
         }
     }
 } else {
-    Write-Host "  Skipping service setup (--SkipService specified)" -ForegroundColor Yellow
+    Write-Host "  Skipping Task Scheduler setup (--SkipScheduledTask specified)" -ForegroundColor Yellow
 }
 
 # Step 8: Create desktop shortcut
@@ -450,9 +445,9 @@ Write-Host "  Recordings: $recordingsPath"
 Write-Host ""
 Write-Host "Next Steps:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "1. If running as a service:"
-Write-Host "   - Check status: Get-Service RecastWindowsRecorder"
-Write-Host "   - View logs: Get-EventLog -LogName Application -Source RecastWindowsRecorder"
+Write-Host "1. If running via Task Scheduler (recommended):"
+Write-Host "   - Check status: Get-ScheduledTask -TaskName RecastWindowsRecorder"
+Write-Host "   - Start now: Start-ScheduledTask -TaskName RecastWindowsRecorder"
 Write-Host ""
 Write-Host "2. If running manually:"
 Write-Host "   - Double-click the desktop shortcut, or run:"
