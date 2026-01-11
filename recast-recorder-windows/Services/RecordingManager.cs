@@ -105,9 +105,12 @@ namespace Recast.WindowsRecorder.Services
             string outArgs;
             bool isNvenc = vCodec.IndexOf("nvenc", StringComparison.OrdinalIgnoreCase) >= 0;
             
+            // Capture method needed early to determine if we skip vf for ddagrab+nvenc
+            var captureMethod = (cfg?.CaptureMethod ?? "gdigrab").Trim().ToLowerInvariant();
+            
             if (isNvenc)
             {
-                outArgs = BuildNvencArgs(cfg, vCodec, vPixFmt, vProfile, gopSize, framerate, vf, vsyncArg, aRate, aBr, aCh, hlsTime, hlsListSize, hlsFlags, hlsPlaylistType, segTmpl, playlist);
+                outArgs = BuildNvencArgs(cfg, vCodec, vPixFmt, vProfile, gopSize, framerate, vf, vsyncArg, aRate, aBr, aCh, hlsTime, hlsListSize, hlsFlags, hlsPlaylistType, segTmpl, playlist, captureMethod);
             }
             else
             {
@@ -135,8 +138,7 @@ namespace Recast.WindowsRecorder.Services
             var audioTqs = cfg?.AudioThreadQueueSize ?? 4096;
             var tqs = $"-thread_queue_size {videoTqs}";
 
-            // Capture method: gdigrab (default) or ddagrab
-            var captureMethod = (cfg?.CaptureMethod ?? "gdigrab").Trim().ToLowerInvariant();
+            // ddagrab-specific options
             var ddagrabOutputIdx = cfg?.DdagrabOutputIdx ?? 0;
             var ddagrabDrawMouse = cfg?.DdagrabDrawMouse ?? true;
 
@@ -688,7 +690,8 @@ namespace Recast.WindowsRecorder.Services
 
         private string BuildNvencArgs(RecorderOptions? cfg, string vCodec, string vPixFmt, string vProfile, 
             int gopSize, int framerate, string vf, string vsyncArg, int aRate, int aBr, int aCh,
-            int hlsTime, int hlsListSize, string hlsFlags, string hlsPlaylistType, string segTmpl, string playlist)
+            int hlsTime, int hlsListSize, string hlsFlags, string hlsPlaylistType, string segTmpl, string playlist,
+            string captureMethod = "gdigrab")
         {
             // Get NVENC-specific settings (new options take precedence over legacy)
             var nvencPreset = cfg?.NvencPreset ?? cfg?.HwPreset;
@@ -759,7 +762,10 @@ namespace Recast.WindowsRecorder.Services
 
             var vArgs = $"-c:v {vCodec}{presetArg}{tuneArg} -pix_fmt {vPixFmt}{profileArg} {vRateArgs} -g {gopSize}{advancedArgs}";
             
-            return $"{vsyncArg} -vf \"{vf}\" {vArgs}" +
+            // Skip -vf for ddagrab since d3d11 output goes directly to NVENC without CPU filter chain
+            var vfArg = (captureMethod == "ddagrab") ? "" : $" -vf \"{vf}\"";
+            
+            return $"{vsyncArg}{vfArg} {vArgs}" +
                    $" -c:a aac -ar {aRate} -b:a {aBr}k -ac {aCh} -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
                    $" -hls_time {hlsTime} -hls_list_size {hlsListSize} -hls_flags {hlsFlags} -hls_playlist_type {hlsPlaylistType}" +
                    $" -hls_segment_filename \"{segTmpl}\" -f hls \"{playlist}\"";
