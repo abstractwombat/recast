@@ -181,12 +181,15 @@ namespace Recast.WindowsRecorder
                 {
                     recording = new
                     {
+                        capture_method = cfg.CaptureMethod ?? "gdigrab",
                         screen_width = cfg.Width,
                         screen_height = cfg.Height,
                         framerate = cfg.Framerate,
                         force_cfr = cfg.ForceCfr,
                         audio_api = cfg.AudioApi,
                         audio_device = cfg.AudioDevice,
+                        ddagrab_output_idx = cfg.DdagrabOutputIdx ?? 0,
+                        ddagrab_draw_mouse = cfg.DdagrabDrawMouse ?? true,
                     },
                     video = new
                     {
@@ -251,12 +254,15 @@ namespace Recast.WindowsRecorder
 
                     if (root.TryGetProperty("recording", out var recording))
                     {
+                        SetIfPresent(recorder, recording, "capture_method", "CaptureMethod");
                         SetIfPresent(recorder, recording, "screen_width", "Width");
                         SetIfPresent(recorder, recording, "screen_height", "Height");
                         SetIfPresent(recorder, recording, "framerate", "Framerate");
                         SetIfPresent(recorder, recording, "force_cfr", "ForceCfr");
                         SetIfPresent(recorder, recording, "audio_api", "AudioApi");
                         SetIfPresent(recorder, recording, "audio_device", "AudioDevice");
+                        SetIfPresent(recorder, recording, "ddagrab_output_idx", "DdagrabOutputIdx");
+                        SetIfPresent(recorder, recording, "ddagrab_draw_mouse", "DdagrabDrawMouse");
                     }
                     if (root.TryGetProperty("video", out var video))
                     {

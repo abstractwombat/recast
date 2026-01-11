@@ -87,6 +87,13 @@
         <div class="settings-section">
           <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">Recording</h3>
           <div class="field">
+            <label for="capture_method">Capture Method</label>
+            <select id="capture_method">
+              <option value="gdigrab">gdigrab (GDI)</option>
+              <option value="ddagrab">ddagrab (Desktop Duplication)</option>
+            </select>
+          </div>
+          <div class="field">
             <label for="screen_width">Screen Width</label>
             <input type="number" id="screen_width" min="640" max="3840" step="1" />
           </div>
@@ -112,6 +119,20 @@
           <div class="field">
             <label for="audio_device">Audio Device</label>
             <input type="text" id="audio_device" placeholder="CABLE Output (VB-Audio Virtual Cable)" />
+          </div>
+          <div id="ddagrab_options" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
+            <h4 style="font-size: 12px; margin: 0 0 8px; color: #6b7280;">ddagrab Options</h4>
+            <div class="field">
+              <label for="ddagrab_output_idx">Monitor Index</label>
+              <input type="number" id="ddagrab_output_idx" min="0" max="10" step="1" placeholder="0 (primary)" />
+            </div>
+            <div class="field">
+              <label for="ddagrab_draw_mouse">Draw Mouse</label>
+              <select id="ddagrab_draw_mouse">
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -513,6 +534,13 @@
     document.getElementById('controller').addEventListener('change', refresh);
 
     // Config management
+    function updateDdagrabVisibility() {
+      const method = document.getElementById('capture_method').value;
+      const ddagrabOpts = document.getElementById('ddagrab_options');
+      ddagrabOpts.style.display = (method === 'ddagrab') ? 'block' : 'none';
+    }
+    document.getElementById('capture_method').addEventListener('change', updateDdagrabVisibility);
+
     async function loadConfig() {
       const statusEl = document.getElementById('configStatus');
       try {
@@ -526,12 +554,16 @@
         const paths = data.paths || {};
         const finalize = data.finalize || {};
 
+        document.getElementById('capture_method').value = recording.capture_method ?? 'gdigrab';
         document.getElementById('screen_width').value = recording.screen_width ?? 1920;
         document.getElementById('screen_height').value = recording.screen_height ?? 1080;
         document.getElementById('framerate').value = recording.framerate ?? 30;
         document.getElementById('force_cfr').value = String(recording.force_cfr ?? true);
         document.getElementById('audio_api').value = recording.audio_api ?? '';
         document.getElementById('audio_device').value = recording.audio_device ?? '';
+        document.getElementById('ddagrab_output_idx').value = recording.ddagrab_output_idx ?? 0;
+        document.getElementById('ddagrab_draw_mouse').value = String(recording.ddagrab_draw_mouse ?? true);
+        updateDdagrabVisibility();
 
         document.getElementById('video_encoder').value = video.video_encoder ?? '';
         document.getElementById('preset').value = video.preset ?? 'ultrafast';
@@ -576,12 +608,15 @@
       
       const payload = {
         recording: {
+          capture_method: document.getElementById('capture_method').value,
           screen_width: parseInt(document.getElementById('screen_width').value, 10),
           screen_height: parseInt(document.getElementById('screen_height').value, 10),
           framerate: parseInt(document.getElementById('framerate').value, 10),
           force_cfr: (document.getElementById('force_cfr').value === 'true'),
           audio_api: document.getElementById('audio_api').value,
           audio_device: document.getElementById('audio_device').value,
+          ddagrab_output_idx: parseInt(document.getElementById('ddagrab_output_idx').value, 10) || 0,
+          ddagrab_draw_mouse: (document.getElementById('ddagrab_draw_mouse').value === 'true'),
         },
         video: {
           video_encoder: document.getElementById('video_encoder').value,

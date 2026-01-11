@@ -135,6 +135,11 @@ namespace Recast.WindowsRecorder.Services
             var audioTqs = cfg?.AudioThreadQueueSize ?? 4096;
             var tqs = $"-thread_queue_size {videoTqs}";
 
+            // Capture method: gdigrab (default) or ddagrab
+            var captureMethod = (cfg?.CaptureMethod ?? "gdigrab").Trim().ToLowerInvariant();
+            var ddagrabOutputIdx = cfg?.DdagrabOutputIdx ?? 0;
+            var ddagrabDrawMouse = cfg?.DdagrabDrawMouse ?? true;
+
             // Probe DirectShow audio devices (log list) and pick common system-mix names
             string? dshowAudio = null;
             try
@@ -150,10 +155,30 @@ namespace Recast.WindowsRecorder.Services
             }
             catch { }
 
+            // Build video input args based on capture method
+            string videoInputArgs;
+            if (captureMethod == "ddagrab")
+            {
+                // ddagrab uses lavfi filter input - Desktop Duplication API (better performance, requires Windows 8+)
+                // Format: -f lavfi -i ddagrab=output_idx=0:draw_mouse=1:framerate=30
+                var ddagrabOpts = new List<string>();
+                ddagrabOpts.Add($"output_idx={ddagrabOutputIdx}");
+                ddagrabOpts.Add($"draw_mouse={(ddagrabDrawMouse ? 1 : 0)}");
+                ddagrabOpts.Add($"framerate={framerate}");
+                videoInputArgs = $"-f lavfi -i \"ddagrab={string.Join(":", ddagrabOpts)}\"";
+                _log.LogInformation("Using ddagrab capture method: {Args}", videoInputArgs);
+            }
+            else
+            {
+                // gdigrab - traditional GDI-based capture
+                videoInputArgs = $"{tqs} -rtbufsize 512M -f gdigrab -framerate {framerate} -draw_mouse 1 -i desktop";
+                _log.LogInformation("Using gdigrab capture method");
+            }
+
             var chainAttempts = new List<string>
             {
-                // Use gdigrab as default (more reliable)
-                $"{tqs} -rtbufsize 512M -f gdigrab -framerate {framerate} -draw_mouse 1 -i desktop -an {outArgs}",
+                // Video-only capture (no audio)
+                $"{videoInputArgs} -an {outArgs}",
             };
 
             var audioApi = _options?.CurrentValue?.AudioApi?.Trim().ToLowerInvariant();
@@ -168,8 +193,8 @@ namespace Recast.WindowsRecorder.Services
             {
                 if (string.IsNullOrEmpty(audioApi) || audioApi == "dshow")
                 {
-                    // Insert gdigrab with configured audio device at front
-                    chainAttempts.Insert(0, $"{tqs} -rtbufsize 512M -f gdigrab -framerate {framerate} -draw_mouse 1 -i desktop {dshowAudioArgs} -i audio=\"{audioDev}\" {outArgs}");
+                    // Insert capture with configured audio device at front
+                    chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{audioDev}\" {outArgs}");
                     _log.LogInformation("Using configured dshow audio device: {Dev}", audioDev);
                 }
             }
@@ -177,7 +202,7 @@ namespace Recast.WindowsRecorder.Services
             if (!string.IsNullOrWhiteSpace(dshowAudio))
             {
                 // Also try an auto-picked dshow system-mix device
-                chainAttempts.Insert(0, $"{tqs} -rtbufsize 512M -f gdigrab -framerate {framerate} -draw_mouse 1 -i desktop {dshowAudioArgs} -i audio=\"{dshowAudio}\" {outArgs}");
+                chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{dshowAudio}\" {outArgs}");
             }
 
             foreach (var tail in chainAttempts)
@@ -603,6 +628,15 @@ namespace Recast.WindowsRecorder.Services
         {
             _log.LogInformation("========== Effective Recording Configuration ==========");
             _log.LogInformation("Resolution: {Width}x{Height} @ {Framerate}fps", width, height, framerate);
+            
+            // Capture method
+            var captureMethod = cfg?.CaptureMethod ?? "gdigrab";
+            _log.LogInformation("Capture method: {Method}", captureMethod);
+            if (captureMethod.Equals("ddagrab", StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogInformation("ddagrab: output_idx={Idx} draw_mouse={Mouse}",
+                    cfg?.DdagrabOutputIdx ?? 0, cfg?.DdagrabDrawMouse ?? true);
+            }
             
             // Video encoding
             var hwAccel = cfg?.HwAccel ?? "none";

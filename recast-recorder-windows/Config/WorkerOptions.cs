@@ -25,6 +25,12 @@ namespace Recast.WindowsRecorder.Config
         public int? VideoThreadQueueSize { get; set; }
         public int? AudioThreadQueueSize { get; set; }
 
+        // Capture method: "gdigrab" (default) or "ddagrab" (Desktop Duplication API, requires lavfi)
+        public string? CaptureMethod { get; set; }
+        // ddagrab-specific options
+        public int? DdagrabOutputIdx { get; set; }  // Monitor index (0 = primary)
+        public bool? DdagrabDrawMouse { get; set; } // Draw mouse cursor (default true)
+
         // Video encoding settings (software - libx264)
         public string? VideoPreset { get; set; }
         public int? VideoCrf { get; set; }
