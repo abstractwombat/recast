@@ -371,16 +371,7 @@ if (-not $SkipScheduledTask) {
  
             $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $InstallPath
             $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
-            $principal = $null
-            try {
-                $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType InteractiveToken -RunLevel LeastPrivilege
-            } catch {
-                try {
-                    $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel LeastPrivilege
-                } catch {
-                    $principal = New-ScheduledTaskPrincipal -UserId $currentUser -RunLevel LeastPrivilege
-                }
-            }
+            $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType InteractiveToken -RunLevel Limited            
             $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
  
             Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Recast Windows Recorder - Starts at logon and restarts on failure" | Out-Null
