@@ -367,17 +367,18 @@ if (-not $SkipScheduledTask) {
  
     if (-not $SkipScheduledTask) {
         try {
-            Write-Host "  Creating Scheduled Task (at logon, restart on failure)..."
+            Write-Host "  Creating Scheduled Task (at logon + every 10 minutes)..."
  
             $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $InstallPath
-            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+            $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+            $repeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10)
             $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited            
-            $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+            $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
  
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Recast Windows Recorder - Starts at logon and restarts on failure" | Out-Null
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logonTrigger, $repeatTrigger) -Principal $principal -Settings $settings -Description "Recast Windows Recorder - Starts at logon and every 10 minutes" | Out-Null
  
             Write-Host "  Scheduled Task created successfully!" -ForegroundColor Green
-            Write-Host "  Restart policy: 3 restarts, 1 minute interval" -ForegroundColor Green
+            Write-Host "  Triggers: At logon + every 10 minutes" -ForegroundColor Green
  
             $startNow = Read-Host "  Start recorder now? (Y/n)"
             if ($startNow -ne "n" -and $startNow -ne "N") {
