@@ -120,7 +120,7 @@
                         <tr class="border-b border-gray-100 hover:bg-gray-50">
                             <td class="py-3 px-4 text-gray-800">{{ job.id }}</td>
                             <td class="py-3 px-4 text-gray-800">
-                                <button data-title="{{ (job.title or '')|e }}" onclick='renameJob({{ job.id }}, this.dataset.title)'
+                                <button data-title="{{ (job.title or '')|e }}" data-job-id="{{ job.id }}" onclick="renameJob(this.dataset.jobId, this.dataset.title)"
                                         class="ml-2 text-blue-600 hover:text-blue-800 text-sm">✎</button>
                                 <span id="job-title-j-{{ job.id }}">{{ job.title or '' }}</span>
                             </td>
@@ -130,7 +130,7 @@
                             <td class="py-3 px-4">
                                 <span class="status-badge status-{{ job.status.lower() }}">{{ job.status }}</span>
                                 {% if job.status == 'PENDING' %}
-                                <button onclick="cancelJob({{ job.id }})" title="Cancel"
+                                <button data-job-id="{{ job.id }}" onclick="cancelJob(this.dataset.jobId)" title="Cancel"
                                         class="ml-2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-100 text-red-700 hover:bg-red-200">
                                     ✖
                                 </button>
@@ -199,13 +199,13 @@
                             {% if recording.recorder_online %}
                                 <a href="/recordings/{{ recording.filename }}" download title="Download"
                                    class="w-8 h-8 flex items-center justify-center rounded bg-green-600 text-white hover:bg-green-700 text-sm">⬇</a>
-                                <button data-title="{{ (recording.title or '')|e }}" onclick='renameJob({{ recording.job_id }}, this.dataset.title)' title="Rename"
+                                <button data-title="{{ (recording.title or '')|e }}" data-job-id="{{ recording.job_id }}" onclick="renameJob(this.dataset.jobId, this.dataset.title)" title="Rename"
                                         class="w-8 h-8 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">✎</button>
                                 <button data-id="{{ recording.id }}" onclick="deleteRecording(this.dataset.id)" title="Delete"
                                         class="w-8 h-8 flex items-center justify-center rounded bg-red-600 text-white hover:bg-red-700 text-sm">🗑</button>
                             {% else %}
                                 <span class="w-8 h-8 flex items-center justify-center rounded bg-gray-300 text-gray-600 text-sm cursor-not-allowed" title="Host offline">⬇</span>
-                                <button data-title="{{ (recording.title or '')|e }}" onclick='renameJob({{ recording.job_id }}, this.dataset.title)' title="Rename"
+                                <button data-title="{{ (recording.title or '')|e }}" data-job-id="{{ recording.job_id }}" onclick="renameJob(this.dataset.jobId, this.dataset.title)" title="Rename"
                                         class="w-8 h-8 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">✎</button>
                                 <span class="w-8 h-8 flex items-center justify-center rounded bg-gray-300 text-gray-600 text-sm cursor-not-allowed" title="Host offline">🗑</span>
                             {% endif %}
