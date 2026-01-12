@@ -518,7 +518,7 @@ namespace Recast.WindowsRecorder.Services
             // - ISO 8601 with offset (e.g., 2025-12-24T15:52:55-07:00)
             // - Local time without offset (assume local)
             // - UTC time with Z
-            var styles = DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal;
+            var styles = DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal;
 
             if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, styles, out var dto) ||
                 DateTimeOffset.TryParse(value, CultureInfo.CurrentCulture, styles, out dto))
@@ -533,7 +533,7 @@ namespace Recast.WindowsRecorder.Services
             {
                 if (dt.Kind == DateTimeKind.Unspecified)
                 {
-                    dt = DateTime.SpecifyKind(dt, DateTimeKind.Local);
+                    dt = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
                 }
                 utc = new DateTimeOffset(dt).ToUniversalTime();
                 return true;
