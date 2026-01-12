@@ -198,7 +198,7 @@ def reconcile_jobs():
         WHERE id IN (
             SELECT j.id FROM jobs j
             LEFT JOIN recorders r ON j.recorder_id = r.id
-            WHERE j.status IN ('ASSIGNED','RECORDING','STOPPING','CONVERTING')
+            WHERE j.status IN ('ASSIGNED','STARTING','RECORDING','STOPPING','CONVERTING')
               AND (
                 r.id IS NULL
                 OR datetime(r.last_heartbeat) <= datetime('now','-2 minutes')
@@ -717,7 +717,7 @@ def get_live_streams():
         FROM jobs j
         JOIN recorders r ON j.recorder_id = r.id
         WHERE (
-            j.status IN ('RECORDING', 'ASSIGNED')
+            j.status IN ('RECORDING', 'ASSIGNED', 'STARTING')
         ) OR (
             r.status = 'RECORDING'
             AND r.current_job_id = j.id

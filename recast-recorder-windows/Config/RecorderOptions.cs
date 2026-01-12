@@ -82,5 +82,10 @@ namespace Recast.WindowsRecorder.Config
         public int? FinalizeHardCapMinutes { get; set; }
         public int? FinalizeStallCapMinutes { get; set; }
         public int? FinalizeLogIntervalSeconds { get; set; }
+
+        public int? StartRetryAttempts { get; set; }
+        public int? StartRetryDelaySeconds { get; set; }
+        public int? StartRetryMaxDelaySeconds { get; set; }
+        public int? StartHlsReadyTimeoutSeconds { get; set; }
     }
 }

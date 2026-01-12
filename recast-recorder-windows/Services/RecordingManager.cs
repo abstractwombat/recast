@@ -20,6 +20,10 @@ namespace Recast.WindowsRecorder.Services
         public int? CurrentJobId { get; private set; }
         public DateTimeOffset? LiveStart { get; private set; }
         public int SegmentCount { get; private set; }
+        public string? LastStartErrorMessage { get; private set; }
+        public string? LastStartFailureCategory { get; private set; }
+
+        private int? _audioDisabledForJobId;
 
         private readonly IOptionsMonitor<RecorderOptions>? _options;
         private volatile bool _finalizing;
@@ -48,6 +52,8 @@ namespace Recast.WindowsRecorder.Services
             var playlist = Path.Combine(CurrentDir, "stream.m3u8");
             try { File.Delete(playlist); } catch { }
             SegmentCount = 0;
+            LastStartErrorMessage = null;
+            LastStartFailureCategory = null;
 
             string ffmpeg = _options?.CurrentValue?.FfmpegPath
                              ?? Environment.GetEnvironmentVariable("FFMPEG")
@@ -196,15 +202,25 @@ namespace Recast.WindowsRecorder.Services
                 if (string.IsNullOrEmpty(audioApi) || audioApi == "dshow")
                 {
                     // Insert capture with configured audio device at front
-                    chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{audioDev}\" {outArgs}");
-                    _log.LogInformation("Using configured dshow audio device: {Dev}", audioDev);
+                    if (_audioDisabledForJobId != jobId)
+                    {
+                        chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{audioDev}\" {outArgs}");
+                        _log.LogInformation("Using configured dshow audio device: {Dev}", audioDev);
+                    }
+                    else
+                    {
+                        _log.LogWarning("Audio disabled for job {JobId} due to prior audio start failure; skipping configured audio device", jobId);
+                    }
                 }
             }
 
             if (!string.IsNullOrWhiteSpace(dshowAudio))
             {
                 // Also try an auto-picked dshow system-mix device
-                chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{dshowAudio}\" {outArgs}");
+                if (_audioDisabledForJobId != jobId)
+                {
+                    chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{dshowAudio}\" {outArgs}");
+                }
             }
 
             foreach (var tail in chainAttempts)
@@ -233,10 +249,13 @@ namespace Recast.WindowsRecorder.Services
                 catch (Exception ex)
                 {
                     _log.LogWarning(ex, "Failed to start ffmpeg attempt");
+                    LastStartFailureCategory = "start";
+                    LastStartErrorMessage = $"Failed to start ffmpeg process: {ex.Message}";
                     _proc = null;
                 }
                 if (_proc != null)
                 {
+                    var proc = _proc;
                     var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
                     try { Directory.CreateDirectory(logDir); } catch { }
                     var ffmpegLogPath = Path.Combine(logDir, $"ffmpeg-job-{(CurrentJobId ?? jobId)}-{DateTime.UtcNow:yyyyMMdd_HHmmss}.log");
@@ -265,14 +284,39 @@ namespace Recast.WindowsRecorder.Services
                         }
                     }
                     catch { }
+
+                    string? lastStderrLine = null;
+                    string? failureCategory = null;
+                    bool audioFailureDetected = false;
                     
                     _ = Task.Run(async () =>
                     {
                         try
                         {
                             string? line;
-                            while ((_proc != null) && !_proc.HasExited && (line = await _proc.StandardError.ReadLineAsync()) != null)
+                            while ((line = await proc.StandardError.ReadLineAsync()) != null)
                             {
+                                lastStderrLine = line;
+                                var lower = line.ToLowerInvariant();
+                                if (failureCategory == null)
+                                {
+                                    if ((lower.Contains("dshow") || lower.Contains("audio=")) &&
+                                        (lower.Contains("could not find") || lower.Contains("cannot") || lower.Contains("unable") || lower.Contains("i/o error") || lower.Contains("no such device") || lower.Contains("device is in use")))
+                                    {
+                                        failureCategory = "audio";
+                                        audioFailureDetected = true;
+                                    }
+                                    else if (lower.Contains("nvenc") &&
+                                             (lower.Contains("no nvenc") || lower.Contains("cannot load") || lower.Contains("nvencapi") || lower.Contains("driver") || lower.Contains("not supported")))
+                                    {
+                                        failureCategory = "nvenc";
+                                    }
+                                    else if (lower.Contains("ddagrab") || lower.Contains("gdigrab"))
+                                    {
+                                        if (lower.Contains("error") || lower.Contains("failed") || lower.Contains("cannot") || lower.Contains("unable"))
+                                            failureCategory = "capture";
+                                    }
+                                }
                                 try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine(line); } } } catch { }
                                 // Log important ffmpeg messages to application log as well
                                 if (line.Contains("Error", StringComparison.OrdinalIgnoreCase) || 
@@ -294,8 +338,9 @@ namespace Recast.WindowsRecorder.Services
                         catch { }
                     });
                     // Wait up to ~15s for playlist and at least one segment (ddagrab may need longer to initialize)
+                    var hlsReadyTimeoutSeconds = cfg?.StartHlsReadyTimeoutSeconds ?? 15;
                     var sw = Stopwatch.StartNew();
-                    while (sw.Elapsed < TimeSpan.FromSeconds(15))
+                    while (sw.Elapsed < TimeSpan.FromSeconds(hlsReadyTimeoutSeconds))
                     {
                         try
                         {
@@ -317,8 +362,15 @@ namespace Recast.WindowsRecorder.Services
                     }
                     var procExited = _proc?.HasExited ?? true;
                     var procExitCode = procExited ? (_proc?.ExitCode ?? -1) : -1;
-                    _log.LogWarning("HLS not ready after timeout. playlistExists={Exists} segments={Segs} procExited={Exited} exitCode={Code} - trying next fallback", 
-                        File.Exists(playlist), SegmentCount, procExited, procExitCode);
+                    var playlistExists = File.Exists(playlist);
+                    var cat = failureCategory ?? "unknown";
+                    var err = $"HLS not ready after timeout ({hlsReadyTimeoutSeconds}s). category={cat} playlistExists={playlistExists} segments={SegmentCount} procExited={procExited} exitCode={procExitCode}";
+                    if (!string.IsNullOrWhiteSpace(lastStderrLine)) err += $" lastStderr='{lastStderrLine}'";
+                    LastStartErrorMessage = err;
+                    LastStartFailureCategory = cat;
+                    if (audioFailureDetected)
+                        _audioDisabledForJobId = jobId;
+                    _log.LogWarning("{Msg} - trying next fallback", err);
                     try { _proc?.Kill(true); } catch { }
                     _proc = null;
                 }

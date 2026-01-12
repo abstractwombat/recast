@@ -130,10 +130,14 @@ namespace Recast.WindowsRecorder.Services
         {
             try
             {
+                var status = _state.Status;
+                if (_isConverting) status = "CONVERTING";
+                else if (_isStopping) status = "STOPPING";
+                else if (_currentJobId == null) status = "IDLE";
                 var payload = new
                 {
                     recorder_id = _recorderId,
-                    status = _currentJobId != null ? (_isConverting ? "CONVERTING" : (_isStopping ? "STOPPING" : "RECORDING")) : "IDLE",
+                    status = status,
                     current_job_id = _currentJobId
                 };
                 var resp = await client.PostAsJsonAsync($"{_managerUrl}/api/recorder/heartbeat", payload, ct);
@@ -273,6 +277,7 @@ namespace Recast.WindowsRecorder.Services
             _state.CurrentJobId = jobId;
             _state.Status = "STARTING";
             _log.LogInformation("State update -> {Status} jobId={JobId}", _state.Status, _state.CurrentJobId);
+            try { await UpdateJobStatusAsync(client, jobId, "STARTING", null, ct); } catch { }
             string stopReason = "END";
 
             try
@@ -313,12 +318,61 @@ namespace Recast.WindowsRecorder.Services
                 // Start HLS recording for live preview
                 try
                 {
-                    var recOk = await _rec.StartAsync(jobId, 1920, 1080, 30);
-                    _log.LogInformation("[job {Job}] Recording start: {Ok}", jobId, recOk);
+                    var startAttempts = Math.Max(1, _cfg.StartRetryAttempts ?? 3);
+                    var delaySeconds = Math.Max(1, _cfg.StartRetryDelaySeconds ?? 5);
+                    var maxDelaySeconds = Math.Max(delaySeconds, _cfg.StartRetryMaxDelaySeconds ?? 30);
+
+                    bool recOk = false;
+                    for (var attempt = 1; attempt <= startAttempts; attempt++)
+                    {
+                        recOk = await _rec.StartAsync(jobId, 1920, 1080, 30);
+                        _log.LogInformation("[job {Job}] Recording start attempt {Attempt}/{Max}: ok={Ok}", jobId, attempt, startAttempts, recOk);
+                        if (recOk) break;
+
+                        var reason = _rec.LastStartErrorMessage;
+                        if (!string.IsNullOrWhiteSpace(reason))
+                            _log.LogWarning("[job {Job}] Recording start attempt {Attempt} failed: {Reason}", jobId, attempt, reason);
+
+                        if (attempt < startAttempts)
+                        {
+                            var sleep = Math.Min(delaySeconds, maxDelaySeconds);
+                            _log.LogInformation("[job {Job}] Waiting {Seconds}s before retrying recording start", jobId, sleep);
+                            await Task.Delay(TimeSpan.FromSeconds(sleep), ct);
+                            delaySeconds = Math.Min(delaySeconds * 2, maxDelaySeconds);
+                        }
+                    }
+
+                    if (!recOk)
+                    {
+                        var msg = _rec.LastStartErrorMessage;
+                        if (string.IsNullOrWhiteSpace(msg)) msg = "ffmpeg failed to start";
+                        await UpdateJobStatusAsync(client, jobId, "FAILED", msg, ct);
+                        try { await _rec.StopAsync(); } catch { }
+                        try { await _sessions.StopAllAsync(); } catch { }
+                        try { await _vnc.StopAsync(); } catch { }
+                        _currentJobId = null;
+                        _state.CurrentJobId = null;
+                        _state.Status = "IDLE";
+                        return;
+                    }
                 }
                 catch (Exception rx)
                 {
                     _log.LogError(rx, "[job {Job}] Recording start failed", jobId);
+                    try
+                    {
+                        var msg = _rec.LastStartErrorMessage;
+                        if (string.IsNullOrWhiteSpace(msg)) msg = "ffmpeg failed to start";
+                        await UpdateJobStatusAsync(client, jobId, "FAILED", msg, ct);
+                    }
+                    catch { }
+                    try { await _rec.StopAsync(); } catch { }
+                    try { await _sessions.StopAllAsync(); } catch { }
+                    try { await _vnc.StopAsync(); } catch { }
+                    _currentJobId = null;
+                    _state.CurrentJobId = null;
+                    _state.Status = "IDLE";
+                    return;
                 }
                 await UpdateJobStatusAsync(client, jobId, "RECORDING", null, ct);
                 _state.Status = "RECORDING";
