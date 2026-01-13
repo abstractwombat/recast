@@ -288,6 +288,8 @@ namespace Recast.WindowsRecorder.Services
                     string? lastStderrLine = null;
                     string? failureCategory = null;
                     bool audioFailureDetected = false;
+                    var recentStderrLines = new List<string>();
+                    object stderrLock = new object();
                     
                     _ = Task.Run(async () =>
                     {
@@ -297,6 +299,13 @@ namespace Recast.WindowsRecorder.Services
                             while ((line = await proc.StandardError.ReadLineAsync()) != null)
                             {
                                 lastStderrLine = line;
+                                // Keep last 20 lines for better error diagnosis
+                                lock (stderrLock)
+                                {
+                                    recentStderrLines.Add(line);
+                                    if (recentStderrLines.Count > 20)
+                                        recentStderrLines.RemoveAt(0);
+                                }
                                 var lower = line.ToLowerInvariant();
                                 if (failureCategory == null)
                                 {
@@ -371,6 +380,13 @@ namespace Recast.WindowsRecorder.Services
                     if (audioFailureDetected)
                         _audioDisabledForJobId = jobId;
                     _log.LogWarning("{Msg} - trying next fallback", err);
+                    // Log recent stderr lines for better diagnosis
+                    List<string> stderrSnapshot;
+                    lock (stderrLock) { stderrSnapshot = new List<string>(recentStderrLines); }
+                    if (stderrSnapshot.Count > 0)
+                    {
+                        _log.LogWarning("FFmpeg recent stderr ({Count} lines):\n{Lines}", stderrSnapshot.Count, string.Join("\n", stderrSnapshot));
+                    }
                     try { _proc?.Kill(true); } catch { }
                     _proc = null;
                 }
