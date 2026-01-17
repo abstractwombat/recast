@@ -286,12 +286,16 @@ namespace Recast.WindowsRecorder.Services
                     catch { }
 
                     string? lastStderrLine = null;
+                    string? lastStdoutLine = null;
                     string? failureCategory = null;
                     bool audioFailureDetected = false;
                     var recentStderrLines = new List<string>();
+                    var recentStdoutLines = new List<string>();
                     object stderrLock = new object();
+                    object stdoutLock = new object();
+                    var processStartTime = DateTime.UtcNow;
                     
-                    _ = Task.Run(async () =>
+                    var stderrTask = Task.Run(async () =>
                     {
                         try
                         {
@@ -326,13 +330,13 @@ namespace Recast.WindowsRecorder.Services
                                             failureCategory = "capture";
                                     }
                                 }
-                                try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine(line); } } } catch { }
+                                try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine($"[STDERR] {line}"); } } } catch { }
                                 // Log important ffmpeg messages to application log as well
                                 if (line.Contains("Error", StringComparison.OrdinalIgnoreCase) || 
                                     line.Contains("Warning", StringComparison.OrdinalIgnoreCase) ||
                                     line.Contains("failed", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    _log.LogWarning("FFmpeg: {Line}", line);
+                                    _log.LogWarning("FFmpeg stderr: {Line}", line);
                                 }
                                 if (line.Contains("Opening 'stream.m3u8' for writing") || line.Contains("hls muxer"))
                                     LiveStart = DateTimeOffset.UtcNow;
@@ -342,9 +346,59 @@ namespace Recast.WindowsRecorder.Services
                                     if (SegmentCount == 0) LiveStart = DateTimeOffset.UtcNow;
                                 }
                             }
-                            try { ffLog?.Dispose(); } catch { }
                         }
                         catch { }
+                    });
+                    
+                    var stdoutTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            string? line;
+                            while ((line = await proc.StandardOutput.ReadLineAsync()) != null)
+                            {
+                                lastStdoutLine = line;
+                                lock (stdoutLock)
+                                {
+                                    recentStdoutLines.Add(line);
+                                    if (recentStdoutLines.Count > 20)
+                                        recentStdoutLines.RemoveAt(0);
+                                }
+                                try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine($"[STDOUT] {line}"); } } } catch { }
+                                // Log stdout messages that might contain errors
+                                var lower = line.ToLowerInvariant();
+                                if (lower.Contains("error") || lower.Contains("warning") || lower.Contains("failed"))
+                                {
+                                    _log.LogWarning("FFmpeg stdout: {Line}", line);
+                                }
+                            }
+                        }
+                        catch { }
+                    });
+                    
+                    var exitMonitorTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await proc.WaitForExitAsync();
+                            var exitTime = DateTime.UtcNow;
+                            var runtime = exitTime - processStartTime;
+                            var exitCode = proc.ExitCode;
+                            var msg = $"FFmpeg process exited after {runtime.TotalSeconds:F2}s with code {exitCode}";
+                            _log.LogWarning(msg);
+                            try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine(); ffLog.WriteLine($"========== Process Exit Info =========="); ffLog.WriteLine($"Exit Code: {exitCode}"); ffLog.WriteLine($"Runtime: {runtime.TotalSeconds:F2} seconds"); ffLog.WriteLine($"Exit Time: {exitTime:yyyy-MM-dd HH:mm:ss} UTC"); ffLog.WriteLine($"======================================="); } } } catch { }
+                            
+                            // If process exited very quickly, it's likely a configuration error
+                            if (runtime.TotalSeconds < 2)
+                            {
+                                _log.LogError("FFmpeg exited within 2 seconds - likely a configuration or initialization error");
+                            }
+                        }
+                        catch { }
+                        finally
+                        {
+                            try { ffLog?.Dispose(); } catch { }
+                        }
                     });
                     // Wait up to ~15s for playlist and at least one segment (ddagrab may need longer to initialize)
                     var hlsReadyTimeoutSeconds = cfg?.StartHlsReadyTimeoutSeconds ?? 15;
@@ -375,6 +429,7 @@ namespace Recast.WindowsRecorder.Services
                     var cat = failureCategory ?? "unknown";
                     var err = $"HLS not ready after timeout ({hlsReadyTimeoutSeconds}s). category={cat} playlistExists={playlistExists} segments={SegmentCount} procExited={procExited} exitCode={procExitCode}";
                     if (!string.IsNullOrWhiteSpace(lastStderrLine)) err += $" lastStderr='{lastStderrLine}'";
+                    if (!string.IsNullOrWhiteSpace(lastStdoutLine)) err += $" lastStdout='{lastStdoutLine}'";
                     LastStartErrorMessage = err;
                     LastStartFailureCategory = cat;
                     if (audioFailureDetected)
@@ -382,10 +437,26 @@ namespace Recast.WindowsRecorder.Services
                     _log.LogWarning("{Msg} - trying next fallback", err);
                     // Log recent stderr lines for better diagnosis
                     List<string> stderrSnapshot;
+                    List<string> stdoutSnapshot;
                     lock (stderrLock) { stderrSnapshot = new List<string>(recentStderrLines); }
+                    lock (stdoutLock) { stdoutSnapshot = new List<string>(recentStdoutLines); }
                     if (stderrSnapshot.Count > 0)
                     {
                         _log.LogWarning("FFmpeg recent stderr ({Count} lines):\n{Lines}", stderrSnapshot.Count, string.Join("\n", stderrSnapshot));
+                    }
+                    if (stdoutSnapshot.Count > 0)
+                    {
+                        _log.LogWarning("FFmpeg recent stdout ({Count} lines):\n{Lines}", stdoutSnapshot.Count, string.Join("\n", stdoutSnapshot));
+                    }
+                    // If process exited early, log additional diagnostic information
+                    if (procExited)
+                    {
+                        var runtime = DateTime.UtcNow - processStartTime;
+                        _log.LogError("FFmpeg process exited early after {Runtime:F2}s with exit code {ExitCode}. This indicates a critical failure during initialization.", runtime.TotalSeconds, procExitCode);
+                        if (stderrSnapshot.Count == 0 && stdoutSnapshot.Count == 0)
+                        {
+                            _log.LogError("No output captured from FFmpeg - process may have crashed or failed to start properly. Check FFmpeg installation and dependencies.");
+                        }
                     }
                     try { _proc?.Kill(true); } catch { }
                     _proc = null;
