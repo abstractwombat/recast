@@ -38,6 +38,13 @@ namespace Recast.WindowsRecorder.Services
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+
+        private const int SM_CXSCREEN = 0;
+        private const int SM_CYSCREEN = 1;
+        private const int SM_CMONITORS = 80;
+
         public RecordingManager(ILogger<RecordingManager> log, IOptionsMonitor<RecorderOptions>? options = null)
         {
             _log = log;
@@ -251,15 +258,12 @@ namespace Recast.WindowsRecorder.Services
                     var inputState = GetInputState();
                     _log.LogInformation("User input state available: {Available}", inputState);
                     
-                    // Get display information
-                    var screens = System.Windows.Forms.Screen.AllScreens;
-                    _log.LogInformation("Display count: {Count}", screens.Length);
-                    for (int i = 0; i < screens.Length; i++)
-                    {
-                        var screen = screens[i];
-                        _log.LogInformation("Display {Index}: {Width}x{Height}, Primary: {Primary}, BitsPerPixel: {Bpp}", 
-                            i, screen.Bounds.Width, screen.Bounds.Height, screen.Primary, screen.BitsPerPixel);
-                    }
+                    // Get display information using Win32 API
+                    var monitorCount = GetSystemMetrics(SM_CMONITORS);
+                    var screenWidth = GetSystemMetrics(SM_CXSCREEN);
+                    var screenHeight = GetSystemMetrics(SM_CYSCREEN);
+                    _log.LogInformation("Display count: {Count}, Primary display: {Width}x{Height}", 
+                        monitorCount, screenWidth, screenHeight);
                     
                     // Check if ffmpeg executable exists and is accessible
                     if (File.Exists(ffmpeg))
