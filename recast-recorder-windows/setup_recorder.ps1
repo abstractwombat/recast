@@ -274,6 +274,7 @@ Write-Host ""
 Write-Host "Step 5: Configuring application settings..." -ForegroundColor Cyan
 
 $appSettingsPath = Join-Path $InstallPath "appsettings.json"
+$appSettingsExamplePath = Join-Path $InstallPath "appsettings.example.json"
 $appSettings = @{
     Recorder = @{
         ManagementServerUrl = $ManagementServerUrl
@@ -309,8 +310,17 @@ $appSettings = @{
     }
 }
 
-$appSettings | ConvertTo-Json -Depth 10 | Set-Content $appSettingsPath -Encoding UTF8
-Write-Host "  Configuration saved to $appSettingsPath" -ForegroundColor Green
+# Always create/update the example file
+$appSettings | ConvertTo-Json -Depth 10 | Set-Content $appSettingsExamplePath -Encoding UTF8
+Write-Host "  Configuration saved to $appSettingsExamplePath" -ForegroundColor Green
+
+# Only create appsettings.json if it doesn't already exist
+if (-not (Test-Path $appSettingsPath)) {
+    Copy-Item -Path $appSettingsExamplePath -Destination $appSettingsPath -Force
+    Write-Host "  Created $appSettingsPath from example" -ForegroundColor Green
+} else {
+    Write-Host "  Existing $appSettingsPath preserved" -ForegroundColor Yellow
+}
 
 # Step 6: Configure firewall
 Write-Host ""
