@@ -6,6 +6,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using Recast.WindowsRecorder.Config;
 using System.Threading;
+using System.Runtime.InteropServices;
 
 
 namespace Recast.WindowsRecorder.Services
@@ -27,6 +28,15 @@ namespace Recast.WindowsRecorder.Services
 
         private readonly IOptionsMonitor<RecorderOptions>? _options;
         private volatile bool _finalizing;
+
+        [DllImport("user32.dll")]
+        private static extern bool GetInputState();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDesktopWindow();
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
 
         public RecordingManager(ILogger<RecordingManager> log, IOptionsMonitor<RecorderOptions>? options = null)
         {
@@ -227,6 +237,110 @@ namespace Recast.WindowsRecorder.Services
             {
                 var args = commonArgs + tail;
                 var fullCommand = $"{ffmpeg} {args}";
+                
+                // Pre-flight system diagnostics
+                _log.LogInformation("========== Pre-Flight System Diagnostics ==========");
+                try
+                {
+                    // Check desktop accessibility
+                    var desktopWindow = GetDesktopWindow();
+                    var desktopVisible = IsWindowVisible(desktopWindow);
+                    _log.LogInformation("Desktop window accessible: {Accessible}, visible: {Visible}", desktopWindow != IntPtr.Zero, desktopVisible);
+                    
+                    // Check if user input is available (not locked)
+                    var inputState = GetInputState();
+                    _log.LogInformation("User input state available: {Available}", inputState);
+                    
+                    // Get display information
+                    var screens = System.Windows.Forms.Screen.AllScreens;
+                    _log.LogInformation("Display count: {Count}", screens.Length);
+                    for (int i = 0; i < screens.Length; i++)
+                    {
+                        var screen = screens[i];
+                        _log.LogInformation("Display {Index}: {Width}x{Height}, Primary: {Primary}, BitsPerPixel: {Bpp}", 
+                            i, screen.Bounds.Width, screen.Bounds.Height, screen.Primary, screen.BitsPerPixel);
+                    }
+                    
+                    // Check if ffmpeg executable exists and is accessible
+                    if (File.Exists(ffmpeg))
+                    {
+                        var ffmpegInfo = new FileInfo(ffmpeg);
+                        _log.LogInformation("FFmpeg executable: exists, size: {Size} bytes, last modified: {Modified}", 
+                            ffmpegInfo.Length, ffmpegInfo.LastWriteTime);
+                    }
+                    else
+                    {
+                        _log.LogWarning("FFmpeg executable not found at path: {Path}", ffmpeg);
+                    }
+                    
+                    // Check working directory
+                    if (Directory.Exists(CurrentDir))
+                    {
+                        var dirInfo = new DirectoryInfo(CurrentDir!);
+                        _log.LogInformation("Working directory exists: {Dir}, writable test pending", CurrentDir);
+                        try
+                        {
+                            var testFile = Path.Combine(CurrentDir!, ".write_test");
+                            File.WriteAllText(testFile, "test");
+                            File.Delete(testFile);
+                            _log.LogInformation("Working directory is writable");
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogError(ex, "Working directory is NOT writable");
+                        }
+                    }
+                    
+                    // Log GPU/NVENC availability if using nvenc
+                    if (vCodec.Contains("nvenc", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _log.LogInformation("Using NVENC encoder: {Codec} - GPU must be available and not locked", vCodec);
+                        try
+                        {
+                            // Try to detect NVIDIA GPU processes
+                            var nvidiaSmiPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe");
+                            if (File.Exists(nvidiaSmiPath))
+                            {
+                                _log.LogInformation("nvidia-smi found, GPU diagnostics available");
+                            }
+                        }
+                        catch { }
+                    }
+                    
+                    // Check audio device availability if using audio
+                    if (tail.Contains("audio="))
+                    {
+                        var audioDevMatch = System.Text.RegularExpressions.Regex.Match(tail, @"audio=""([^""]+)""");
+                        if (audioDevMatch.Success)
+                        {
+                            var audioDevName = audioDevMatch.Groups[1].Value;
+                            _log.LogInformation("Audio device requested: {Device}", audioDevName);
+                            
+                            // Re-enumerate to verify device is still available
+                            try
+                            {
+                                var currentDevices = EnumerateDshowAudioDevices(ffmpeg);
+                                var deviceAvailable = currentDevices.Any(d => d.Equals(audioDevName, StringComparison.OrdinalIgnoreCase));
+                                _log.LogInformation("Audio device currently available: {Available}", deviceAvailable);
+                                if (!deviceAvailable)
+                                {
+                                    _log.LogWarning("Audio device '{Device}' not found in current device list: {List}", 
+                                        audioDevName, string.Join(", ", currentDevices));
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.LogWarning(ex, "Failed to re-enumerate audio devices for verification");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Pre-flight diagnostics failed (non-fatal)");
+                }
+                _log.LogInformation("======================================================");
+                
                 _log.LogInformation("========== FFmpeg Recording Start ==========");
                 _log.LogInformation("FFmpeg path: {Path}", ffmpeg);
                 _log.LogInformation("FFmpeg full command:\n{Command}", fullCommand);
@@ -256,9 +370,10 @@ namespace Recast.WindowsRecorder.Services
                 if (_proc != null)
                 {
                     var proc = _proc;
+                    _log.LogInformation("FFmpeg process started successfully, PID: {Pid}", proc.Id);
                     var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
                     try { Directory.CreateDirectory(logDir); } catch { }
-                    var ffmpegLogPath = Path.Combine(logDir, $"ffmpeg-job-{(CurrentJobId ?? jobId)}-{DateTime.UtcNow:yyyyMMdd_HHmmss}.log");
+                    var ffmpegLogPath = Path.Combine(logDir, $"ffmpeg-job-{(CurrentJobId ?? jobId)}-{DateTime.Now:yyyyMMdd_HHmmss}.log");
                     _log.LogInformation("FFmpeg log file: {LogPath}", ffmpegLogPath);
                     StreamWriter? ffLog = null;
                     try { ffLog = new StreamWriter(new FileStream(ffmpegLogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true }; } catch { }
@@ -273,7 +388,7 @@ namespace Recast.WindowsRecorder.Services
                             {
                                 ffLog.WriteLine($"========== FFmpeg Recording Log ==========");
                                 ffLog.WriteLine($"Job ID: {jobId}");
-                                ffLog.WriteLine($"Start Time: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+                                ffLog.WriteLine($"Start Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
                                 ffLog.WriteLine($"FFmpeg Path: {ffmpeg}");
                                 ffLog.WriteLine($"Full Command:");
                                 ffLog.WriteLine(fullCommand);
@@ -293,7 +408,9 @@ namespace Recast.WindowsRecorder.Services
                     var recentStdoutLines = new List<string>();
                     object stderrLock = new object();
                     object stdoutLock = new object();
-                    var processStartTime = DateTime.UtcNow;
+                    var processStartTime = DateTime.Now;
+                    bool firstOutputReceived = false;
+                    var firstOutputTime = DateTime.Now;
                     
                     var stderrTask = Task.Run(async () =>
                     {
@@ -302,6 +419,13 @@ namespace Recast.WindowsRecorder.Services
                             string? line;
                             while ((line = await proc.StandardError.ReadLineAsync()) != null)
                             {
+                                if (!firstOutputReceived)
+                                {
+                                    firstOutputReceived = true;
+                                    firstOutputTime = DateTime.Now;
+                                    var timeToFirstOutput = (firstOutputTime - processStartTime).TotalMilliseconds;
+                                    _log.LogInformation("First ffmpeg output received after {Ms}ms", timeToFirstOutput);
+                                }
                                 lastStderrLine = line;
                                 // Keep last 20 lines for better error diagnosis
                                 lock (stderrLock)
@@ -331,6 +455,26 @@ namespace Recast.WindowsRecorder.Services
                                     }
                                 }
                                 try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine($"[STDERR] {line}"); } } } catch { }
+                                
+                                // Log key initialization milestones
+                                if (line.Contains("Input #", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    _log.LogInformation("FFmpeg detected input: {Line}", line.Trim());
+                                }
+                                else if (line.Contains("Stream mapping:", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    _log.LogInformation("FFmpeg stream mapping started");
+                                }
+                                else if (line.Contains("Output #", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    _log.LogInformation("FFmpeg output initialized: {Line}", line.Trim());
+                                }
+                                else if (line.Contains("frame=", StringComparison.OrdinalIgnoreCase) && line.Contains("fps="))
+                                {
+                                    // First frame progress line indicates encoding has started
+                                    _log.LogInformation("FFmpeg encoding started: {Line}", line.Trim());
+                                }
+                                
                                 // Log important ffmpeg messages to application log as well
                                 if (line.Contains("Error", StringComparison.OrdinalIgnoreCase) || 
                                     line.Contains("Warning", StringComparison.OrdinalIgnoreCase) ||
@@ -339,7 +483,10 @@ namespace Recast.WindowsRecorder.Services
                                     _log.LogWarning("FFmpeg stderr: {Line}", line);
                                 }
                                 if (line.Contains("Opening 'stream.m3u8' for writing") || line.Contains("hls muxer"))
+                                {
+                                    _log.LogInformation("FFmpeg opening HLS playlist for writing");
                                     LiveStart = DateTimeOffset.UtcNow;
+                                }
                                 if (line.Contains("#EXTINF"))
                                 {
                                     // Some builds echo segment logs to stderr; mark as ready hint
@@ -381,12 +528,12 @@ namespace Recast.WindowsRecorder.Services
                         try
                         {
                             await proc.WaitForExitAsync();
-                            var exitTime = DateTime.UtcNow;
+                            var exitTime = DateTime.Now;
                             var runtime = exitTime - processStartTime;
                             var exitCode = proc.ExitCode;
                             var msg = $"FFmpeg process exited after {runtime.TotalSeconds:F2}s with code {exitCode}";
                             _log.LogWarning(msg);
-                            try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine(); ffLog.WriteLine($"========== Process Exit Info =========="); ffLog.WriteLine($"Exit Code: {exitCode}"); ffLog.WriteLine($"Runtime: {runtime.TotalSeconds:F2} seconds"); ffLog.WriteLine($"Exit Time: {exitTime:yyyy-MM-dd HH:mm:ss} UTC"); ffLog.WriteLine($"======================================="); } } } catch { }
+                            try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine(); ffLog.WriteLine($"========== Process Exit Info =========="); ffLog.WriteLine($"Exit Code: {exitCode}"); ffLog.WriteLine($"Runtime: {runtime.TotalSeconds:F2} seconds"); ffLog.WriteLine($"Exit Time: {exitTime:yyyy-MM-dd HH:mm:ss}"); ffLog.WriteLine($"======================================="); } } } catch { }
                             
                             // If process exited very quickly, it's likely a configuration error
                             if (runtime.TotalSeconds < 2)
@@ -403,8 +550,13 @@ namespace Recast.WindowsRecorder.Services
                     // Wait up to ~15s for playlist and at least one segment (ddagrab may need longer to initialize)
                     var hlsReadyTimeoutSeconds = cfg?.StartHlsReadyTimeoutSeconds ?? 15;
                     var sw = Stopwatch.StartNew();
+                    var lastLogTime = DateTime.Now;
+                    var logIntervalSeconds = 3;
+                    int checkCount = 0;
+                    
                     while (sw.Elapsed < TimeSpan.FromSeconds(hlsReadyTimeoutSeconds))
                     {
+                        checkCount++;
                         try
                         {
                             if (File.Exists(playlist))
@@ -417,6 +569,35 @@ namespace Recast.WindowsRecorder.Services
                                     if (LiveStart == null) LiveStart = DateTimeOffset.UtcNow;
                                     _log.LogInformation("HLS ready: segments={Segs} playlist={Playlist}", segs, playlist);
                                     return true;
+                                }
+                            }
+                            
+                            // Log progress every few seconds
+                            if ((DateTime.Now - lastLogTime).TotalSeconds >= logIntervalSeconds)
+                            {
+                                lastLogTime = DateTime.Now;
+                                var elapsed = sw.Elapsed.TotalSeconds;
+                                var procStillRunning = !proc.HasExited;
+                                var outputReceived = firstOutputReceived;
+                                var timeSinceFirstOutput = outputReceived ? (DateTime.Now - firstOutputTime).TotalSeconds : 0;
+                                
+                                _log.LogInformation(
+                                    "Waiting for HLS ready: elapsed={Elapsed:F1}s/{Timeout}s, checks={Checks}, " +
+                                    "procRunning={Running}, outputReceived={OutputReceived}, timeSinceFirstOutput={TimeSinceOutput:F1}s, " +
+                                    "playlistExists={PlaylistExists}, segments={Segments}",
+                                    elapsed, hlsReadyTimeoutSeconds, checkCount, procStillRunning, outputReceived, 
+                                    timeSinceFirstOutput, File.Exists(playlist), SegmentCount);
+                                
+                                // If process exited early, log it immediately
+                                if (!procStillRunning)
+                                {
+                                    _log.LogWarning("FFmpeg process has exited during wait period at {Elapsed:F1}s", elapsed);
+                                }
+                                
+                                // If no output received after 5 seconds, that's suspicious
+                                if (!outputReceived && elapsed > 5)
+                                {
+                                    _log.LogWarning("No ffmpeg output received after {Elapsed:F1}s - process may be hung", elapsed);
                                 }
                             }
                         }
