@@ -63,7 +63,7 @@ namespace Recast.WindowsRecorder.Services
             LogEffectiveConfig(cfg, width, height, framerate);
 
             // Prefer ddagrab (Desktop Duplication), fallback to gdigrab. Capture full desktop, scale/pad to output.
-            var commonArgs = "-y ";
+            var commonArgs = "-y -nostdin ";
             var segTmpl = Path.Combine(CurrentDir, "seg%05d.ts");
             var vf = $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}";
             var forceCfr = (cfg?.ForceCfr == true);
