@@ -79,8 +79,11 @@ namespace Recast.WindowsRecorder.Services
             // Log effective configuration
             LogEffectiveConfig(cfg, width, height, framerate);
 
+            // Get FFmpeg log level from config (default to 'error' if not specified)
+            var logLevel = cfg?.FfmpegLogLevel ?? "error";
+            
             // Prefer ddagrab (Desktop Duplication), fallback to gdigrab. Capture full desktop, scale/pad to output.
-            var commonArgs = "-y -nostdin ";
+            var commonArgs = $"-y -nostdin -loglevel {logLevel} ";
             var segTmpl = Path.Combine(CurrentDir, "seg%05d.ts");
             var vf = $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}";
             var forceCfr = (cfg?.ForceCfr == true);
@@ -719,7 +722,8 @@ namespace Recast.WindowsRecorder.Services
                     {
                         var listPath = Path.Combine(workDir, "files.txt");
                         try { await File.WriteAllLinesAsync(listPath, segs.Select(s => $"file '{s.Replace("'", "'\\''")}'")); } catch { }
-                        var argsConcat = $"-y -nostdin -f concat -safe 0 -i \"{listPath}\" -c copy -bsf:a aac_adtstoasc -movflags +faststart \"{outPath}\"";
+                        var finalizeLogLevel = cfg?.FfmpegLogLevel ?? "error";
+                        var argsConcat = $"-y -nostdin -loglevel {finalizeLogLevel} -f concat -safe 0 -i \"{listPath}\" -c copy -bsf:a aac_adtstoasc -movflags +faststart \"{outPath}\"";
                         _log.LogInformation("Finalizing via concat: {Args}", argsConcat);
                         using var pConcat = Process.Start(new ProcessStartInfo
                         {
@@ -733,6 +737,33 @@ namespace Recast.WindowsRecorder.Services
                         });
                         if (pConcat != null)
                         {
+                            // Setup logging for finalize
+                            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+                            try { Directory.CreateDirectory(logDir); } catch { }
+                            var finalizeLogPath = Path.Combine(logDir, $"ffmpeg-finalize-job-{(CurrentJobId ?? 0)}-{DateTime.Now:yyyyMMdd_HHmmss}.log");
+                            _log.LogInformation("FFmpeg finalize log file: {LogPath}", finalizeLogPath);
+                            StreamWriter? ffLog = null;
+                            try { ffLog = new StreamWriter(new FileStream(finalizeLogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true }; } catch { }
+                            object logLock = new object();
+                            try 
+                            { 
+                                if (ffLog != null) 
+                                { 
+                                    lock (logLock) 
+                                    { 
+                                        ffLog.WriteLine($"========== FFmpeg Finalize Log ==========");
+                                        ffLog.WriteLine($"Job ID: {CurrentJobId ?? 0}");
+                                        ffLog.WriteLine($"Start Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                                        ffLog.WriteLine($"FFmpeg Path: {ffmpeg}");
+                                        ffLog.WriteLine($"Command Args: {argsConcat}");
+                                        ffLog.WriteLine($"Working Directory: {workDir}");
+                                        ffLog.WriteLine($"=========================================");
+                                        ffLog.WriteLine();
+                                    } 
+                                } 
+                            } 
+                            catch { }
+
                             var stderrLines = new List<string>();
                             var stdoutLines = new List<string>();
                             var opened = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -749,6 +780,7 @@ namespace Recast.WindowsRecorder.Services
                                     string? line;
                                     while ((line = await pConcat.StandardError.ReadLineAsync()) != null)
                                     {
+                                        try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine($"[STDERR] {line}"); } } } catch { }
                                         if (stderrLines.Count < 50) stderrLines.Add(line);
                                         try
                                         {
@@ -782,6 +814,7 @@ namespace Recast.WindowsRecorder.Services
                                     string? line;
                                     while ((line = await pConcat.StandardOutput.ReadLineAsync()) != null)
                                     {
+                                        try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine($"[STDOUT] {line}"); } } } catch { }
                                         if (stdoutLines.Count < 10) stdoutLines.Add(line);
                                     }
                                 }
@@ -867,6 +900,7 @@ namespace Recast.WindowsRecorder.Services
                                     CurrentJobId = null;
                                     LiveStart = null;
                                     SegmentCount = 0;
+                                    try { ffLog?.Dispose(); } catch { }
                                     return outPath;
                                 }
                                 else
@@ -874,6 +908,7 @@ namespace Recast.WindowsRecorder.Services
                                     _log.LogWarning("Concat finalize failed or output too small. exit={Exit} size={Size} stderr={Err}", pConcat.ExitCode, sizeC, string.Join(" | ", stderrLines));
                                 }
                             }
+                            try { ffLog?.Dispose(); } catch { }
                         }
                     }
                     else
@@ -1008,6 +1043,9 @@ namespace Recast.WindowsRecorder.Services
             // Thread queue sizes
             _log.LogInformation("Thread queues: video={VideoTqs} audio={AudioTqs}",
                 cfg?.VideoThreadQueueSize ?? 4096, cfg?.AudioThreadQueueSize ?? 4096);
+            
+            // FFmpeg log level
+            _log.LogInformation("FFmpeg log level: {LogLevel}", cfg?.FfmpegLogLevel ?? "error");
             
             _log.LogInformation("=======================================================");
         }

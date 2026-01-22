@@ -218,6 +218,7 @@ namespace Recast.WindowsRecorder
                     {
                         ffmpeg_path = cfg.FfmpegPath,
                         output_directory = cfg.OutputDirectory,
+                        ffmpeg_log_level = cfg.FfmpegLogLevel,
                     },
                     finalize = new
                     {
@@ -291,6 +292,7 @@ namespace Recast.WindowsRecorder
                     {
                         SetIfPresent(recorder, paths, "ffmpeg_path", "FfmpegPath");
                         SetIfPresent(recorder, paths, "output_directory", "OutputDirectory");
+                        SetIfPresent(recorder, paths, "ffmpeg_log_level", "FfmpegLogLevel");
                     }
                     if (root.TryGetProperty("finalize", out var finalize))
                     {

@@ -87,5 +87,8 @@ namespace Recast.WindowsRecorder.Config
         public int? StartRetryDelaySeconds { get; set; }
         public int? StartRetryMaxDelaySeconds { get; set; }
         public int? StartHlsReadyTimeoutSeconds { get; set; }
+        
+        // FFmpeg log level: quiet, panic, fatal, error, warning, info, verbose, debug, trace
+        public string? FfmpegLogLevel { get; set; }
     }
 }
