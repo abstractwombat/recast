@@ -93,14 +93,14 @@ namespace Recast.WindowsRecorder.Services
                             Process.Start(new ProcessStartInfo
                             {
                                 FileName = "shutdown",
-                                Arguments = "/l",
+                                Arguments = "/r /f /t 3",
                                 UseShellExecute = false,
                                 CreateNoWindow = true,
                             });
                         }
                         catch (Exception ex)
                         {
-                            _log.LogWarning(ex, "[DdaProbe] Failed to log off session");
+                            _log.LogWarning(ex, "[DdaProbe] Failed to initiate system restart");
                         }
                         Environment.Exit(2);
                     }
