@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using Recast.WindowsRecorder.Config;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 
 
@@ -54,6 +56,94 @@ namespace Recast.WindowsRecorder.Services
         }
 
         public bool IsReady => CurrentDir != null && File.Exists(Path.Combine(CurrentDir!, "stream.m3u8")) && SegmentCount > 0;
+
+        public async Task<bool> ProbeDdagrabAsync(CancellationToken ct)
+        {
+            var cfg = _options?.CurrentValue;
+            var ffmpeg = cfg?.FfmpegPath
+                         ?? Environment.GetEnvironmentVariable("FFMPEG")
+                         ?? "ffmpeg";
+            var outputIdx = cfg?.DdagrabOutputIdx ?? 0;
+            var drawMouse = cfg?.DdagrabDrawMouse ?? true;
+            var framerate = cfg?.Framerate ?? 30;
+            var timeoutSeconds = cfg?.DdaProbeTimeoutSeconds ?? 8;
+            var args = $"-y -nostdin -loglevel error -f lavfi -i \"ddagrab=output_idx={outputIdx}:draw_mouse={(drawMouse ? 1 : 0)}:framerate={framerate}\" -frames:v 1 -f null -";
+
+            _log.LogInformation("[DdaProbe] Starting ddagrab probe: ffmpeg={Path} args={Args}", ffmpeg, args);
+
+            try
+            {
+                using var proc = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = ffmpeg,
+                        Arguments = args,
+                        UseShellExecute = false,
+                        RedirectStandardError = true,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true,
+                    }
+                };
+
+                if (!proc.Start())
+                {
+                    _log.LogWarning("[DdaProbe] Failed to start ffmpeg process");
+                    return false;
+                }
+
+                var stderrLines = new List<string>();
+                var stdoutLines = new List<string>();
+
+                var stderrTask = Task.Run(async () =>
+                {
+                    string? line;
+                    while ((line = await proc.StandardError.ReadLineAsync()) != null)
+                    {
+                        if (stderrLines.Count < 20) stderrLines.Add(line);
+                    }
+                }, ct);
+
+                var stdoutTask = Task.Run(async () =>
+                {
+                    string? line;
+                    while ((line = await proc.StandardOutput.ReadLineAsync()) != null)
+                    {
+                        if (stdoutLines.Count < 20) stdoutLines.Add(line);
+                    }
+                }, ct);
+
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+                try
+                {
+                    await proc.WaitForExitAsync(timeoutCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { if (!proc.HasExited) proc.Kill(true); } catch { }
+                    _log.LogWarning("[DdaProbe] Probe timed out after {Seconds}s", timeoutSeconds);
+                    return false;
+                }
+
+                try { await Task.WhenAll(stderrTask, stdoutTask); } catch { }
+
+                if (stderrLines.Count > 0)
+                    _log.LogDebug("[DdaProbe] stderr:\n{Lines}", string.Join("\n", stderrLines));
+                if (stdoutLines.Count > 0)
+                    _log.LogDebug("[DdaProbe] stdout:\n{Lines}", string.Join("\n", stdoutLines));
+
+                var ok = proc.ExitCode == 0;
+                _log.LogInformation("[DdaProbe] ffmpeg exitCode={Code} ok={Ok}", proc.ExitCode, ok);
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "[DdaProbe] Probe failed");
+                return false;
+            }
+        }
 
         public async Task<bool> StartAsync(int jobId, int width = 1920, int height = 1080, int framerate = 30)
         {

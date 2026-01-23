@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using Recast.WindowsRecorder.Config;
 using Recast.WindowsRecorder.Models;
 using System.IO;
+using System.Diagnostics;
 
 namespace Recast.WindowsRecorder.Services
 {
@@ -29,6 +30,8 @@ namespace Recast.WindowsRecorder.Services
         private CancellationTokenSource? _jobCts;
         private volatile bool _isConverting;
         private volatile bool _isStopping;
+        private volatile bool _ddaProbeRunning;
+        private DateTimeOffset? _lastDdaProbeUtc;
 
         public ManagementService(
             ILogger<ManagementService> log,
@@ -55,6 +58,62 @@ namespace Recast.WindowsRecorder.Services
             _state.RecorderId = _recorderId;
             _state.Hostname = _hostname;
             _state.Status = "IDLE";
+        }
+
+        private async Task MaybeRunDdaProbeAsync(CancellationToken ct)
+        {
+            if (_ddaProbeRunning || _isConverting || _isStopping) return;
+            if (_currentJobId != null || _rec.CurrentJobId != null) return;
+
+            var cfg = _cfg;
+            if (cfg?.DdaProbeEnabled != true) return;
+            var captureMethod = (cfg.CaptureMethod ?? "gdigrab").Trim().ToLowerInvariant();
+            if (captureMethod != "ddagrab") return;
+
+            var intervalSeconds = cfg.DdaProbeIntervalSeconds ?? 300;
+            var now = DateTimeOffset.UtcNow;
+            if (_lastDdaProbeUtc.HasValue && (now - _lastDdaProbeUtc.Value).TotalSeconds < intervalSeconds)
+                return;
+
+            _ddaProbeRunning = true;
+            _lastDdaProbeUtc = now;
+
+            try
+            {
+                _log.LogInformation("[DdaProbe] Running idle ddagrab probe");
+                var ok = await _rec.ProbeDdagrabAsync(ct);
+                if (!ok)
+                {
+                    _log.LogWarning("[DdaProbe] Probe failed while idle");
+                    if (cfg.DdaProbeRestartOnFail == true)
+                    {
+                        _log.LogError("[DdaProbe] Restart on failure is enabled. Logging off user session and exiting.");
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = "shutdown",
+                                Arguments = "/l",
+                                UseShellExecute = false,
+                                CreateNoWindow = true,
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogWarning(ex, "[DdaProbe] Failed to log off session");
+                        }
+                        Environment.Exit(2);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "[DdaProbe] Idle probe failed");
+            }
+            finally
+            {
+                _ddaProbeRunning = false;
+            }
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -92,6 +151,7 @@ namespace Recast.WindowsRecorder.Services
                         else
                         {
                             _log.LogDebug("No job available");
+                            await MaybeRunDdaProbeAsync(stoppingToken);
                         }
                     }
                 }

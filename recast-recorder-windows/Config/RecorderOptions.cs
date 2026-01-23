@@ -90,5 +90,11 @@ namespace Recast.WindowsRecorder.Config
         
         // FFmpeg log level: quiet, panic, fatal, error, warning, info, verbose, debug, trace
         public string? FfmpegLogLevel { get; set; }
+
+        // Idle ddagrab probe settings
+        public bool? DdaProbeEnabled { get; set; }
+        public int? DdaProbeIntervalSeconds { get; set; }
+        public int? DdaProbeTimeoutSeconds { get; set; }
+        public bool? DdaProbeRestartOnFail { get; set; }
     }
 }
