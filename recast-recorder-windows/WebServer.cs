@@ -218,7 +218,14 @@ namespace Recast.WindowsRecorder
                     {
                         ffmpeg_path = cfg.FfmpegPath,
                         output_directory = cfg.OutputDirectory,
+                    },
+                    debug = new
+                    {
                         ffmpeg_log_level = cfg.FfmpegLogLevel,
+                        dda_probe_enabled = cfg.DdaProbeEnabled,
+                        dda_probe_interval_seconds = cfg.DdaProbeIntervalSeconds,
+                        dda_probe_timeout_seconds = cfg.DdaProbeTimeoutSeconds,
+                        dda_probe_restart_on_fail = cfg.DdaProbeRestartOnFail,
                     },
                     finalize = new
                     {
@@ -292,7 +299,14 @@ namespace Recast.WindowsRecorder
                     {
                         SetIfPresent(recorder, paths, "ffmpeg_path", "FfmpegPath");
                         SetIfPresent(recorder, paths, "output_directory", "OutputDirectory");
-                        SetIfPresent(recorder, paths, "ffmpeg_log_level", "FfmpegLogLevel");
+                    }
+                    if (root.TryGetProperty("debug", out var debug))
+                    {
+                        SetIfPresent(recorder, debug, "ffmpeg_log_level", "FfmpegLogLevel");
+                        SetIfPresent(recorder, debug, "dda_probe_enabled", "DdaProbeEnabled");
+                        SetIfPresent(recorder, debug, "dda_probe_interval_seconds", "DdaProbeIntervalSeconds");
+                        SetIfPresent(recorder, debug, "dda_probe_timeout_seconds", "DdaProbeTimeoutSeconds");
+                        SetIfPresent(recorder, debug, "dda_probe_restart_on_fail", "DdaProbeRestartOnFail");
                     }
                     if (root.TryGetProperty("finalize", out var finalize))
                     {

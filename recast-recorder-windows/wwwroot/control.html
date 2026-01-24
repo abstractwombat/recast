@@ -240,6 +240,10 @@
             <label for="output_directory">Output Directory</label>
             <input type="text" id="output_directory" placeholder="recordings" />
           </div>
+        </div>
+
+        <div class="settings-section">
+          <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">Debug</h3>
           <div class="field">
             <label for="ffmpeg_log_level">FFmpeg Log Level</label>
             <select id="ffmpeg_log_level">
@@ -252,6 +256,28 @@
               <option value="verbose">Verbose</option>
               <option value="debug">Debug</option>
               <option value="trace">Trace</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="dda_probe_enabled">DDA Probe Enabled</label>
+            <select id="dda_probe_enabled">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="dda_probe_interval_seconds">DDA Probe Interval (sec)</label>
+            <input type="number" id="dda_probe_interval_seconds" min="1" max="3600" step="1" />
+          </div>
+          <div class="field">
+            <label for="dda_probe_timeout_seconds">DDA Probe Timeout (sec)</label>
+            <input type="number" id="dda_probe_timeout_seconds" min="1" max="120" step="1" />
+          </div>
+          <div class="field">
+            <label for="dda_probe_restart_on_fail">Restart On Probe Fail</label>
+            <select id="dda_probe_restart_on_fail">
+              <option value="true">true</option>
+              <option value="false">false</option>
             </select>
           </div>
         </div>
@@ -566,6 +592,7 @@
         const video = data.video || {};
         const audio = data.audio || {};
         const paths = data.paths || {};
+        const debug = data.debug || {};
         const finalize = data.finalize || {};
 
         document.getElementById('capture_method').value = recording.capture_method ?? 'gdigrab';
@@ -601,7 +628,11 @@
 
         document.getElementById('ffmpeg_path').value = paths.ffmpeg_path ?? '';
         document.getElementById('output_directory').value = paths.output_directory ?? '';
-        document.getElementById('ffmpeg_log_level').value = paths.ffmpeg_log_level ?? 'error';
+        document.getElementById('ffmpeg_log_level').value = debug.ffmpeg_log_level ?? 'error';
+        document.getElementById('dda_probe_enabled').value = String(debug.dda_probe_enabled ?? true);
+        document.getElementById('dda_probe_interval_seconds').value = debug.dda_probe_interval_seconds ?? 300;
+        document.getElementById('dda_probe_timeout_seconds').value = debug.dda_probe_timeout_seconds ?? 8;
+        document.getElementById('dda_probe_restart_on_fail').value = String(debug.dda_probe_restart_on_fail ?? false);
 
         document.getElementById('finalize_hard_cap_minutes').value = finalize.hard_cap_minutes ?? '';
         document.getElementById('finalize_stall_cap_minutes').value = finalize.stall_cap_minutes ?? '';
@@ -657,7 +688,13 @@
         paths: {
           ffmpeg_path: document.getElementById('ffmpeg_path').value,
           output_directory: document.getElementById('output_directory').value,
+        },
+        debug: {
           ffmpeg_log_level: document.getElementById('ffmpeg_log_level').value,
+          dda_probe_enabled: (document.getElementById('dda_probe_enabled').value === 'true'),
+          dda_probe_interval_seconds: parseInt(document.getElementById('dda_probe_interval_seconds').value, 10),
+          dda_probe_timeout_seconds: parseInt(document.getElementById('dda_probe_timeout_seconds').value, 10),
+          dda_probe_restart_on_fail: (document.getElementById('dda_probe_restart_on_fail').value === 'true'),
         },
         finalize: {
           hard_cap_minutes: parseInt(document.getElementById('finalize_hard_cap_minutes').value, 10),
