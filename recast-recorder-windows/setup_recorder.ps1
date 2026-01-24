@@ -112,7 +112,7 @@ if ($confirm -eq "n" -or $confirm -eq "N") {
 
 # Step 1: Check prerequisites
 Write-Host ""
-Write-Host "Step 1: Checking prerequisites..." -ForegroundColor Cyan
+Write-Host "Checking prerequisites..." -ForegroundColor Cyan
 
 # Check .NET SDK/Runtime
 $dotnetVersion = $null
@@ -175,7 +175,7 @@ if (-not $vncFound) {
 
 # Step 2: Build the application
 Write-Host ""
-Write-Host "Step 2: Building application..." -ForegroundColor Cyan
+Write-Host "Building application..." -ForegroundColor Cyan
 
 if (-not $SkipBuild) {
     $projectPath = Join-Path $ScriptDir "Recast.WindowsRecorder.csproj"
@@ -207,7 +207,7 @@ if (-not $SkipBuild) {
 
 # Step 3: Create installation directory
 Write-Host ""
-Write-Host "Step 3: Creating installation directory..." -ForegroundColor Cyan
+Write-Host "Creating installation directory..." -ForegroundColor Cyan
 
 if (-not (Test-Path $InstallPath)) {
     New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
@@ -257,7 +257,7 @@ try {
 
 # Step 4: Copy files
 Write-Host ""
-Write-Host "Step 4: Copying application files..." -ForegroundColor Cyan
+Write-Host "Copying application files..." -ForegroundColor Cyan
 
 $publishPath = Join-Path $ScriptDir "publish"
 if (-not (Test-Path $publishPath)) {
@@ -265,66 +265,52 @@ if (-not (Test-Path $publishPath)) {
     exit 1
 }
 
-# Copy all published files
-Copy-Item -Path "$publishPath\*" -Destination $InstallPath -Recurse -Force
+# Copy all files EXCEPT appsettings.json
+Get-ChildItem -Path "$publishPath\*" -Exclude "appsettings.json" -Recurse | 
+Copy-Item -Destination $InstallPath -Force
 Write-Host "  Copied application files to $InstallPath" -ForegroundColor Green
 
-# Step 5: Configure appsettings.json
-Write-Host ""
-Write-Host "Step 5: Configuring application settings..." -ForegroundColor Cyan
+# Handle the JSON Merge logic
+$sourceConfig = "$publishPath\appsettings.json"
+$destConfig   = "$InstallPath\appsettings.json"
+if (Test-Path $destConfig) {
+    Write-Host "Merging appsettings.json..." -ForegroundColor Cyan
 
-$appSettingsPath = Join-Path $InstallPath "appsettings.json"
-$appSettingsExamplePath = Join-Path $InstallPath "appsettings.example.json"
-$appSettings = @{
-    Recorder = @{
-        ManagementServerUrl = $ManagementServerUrl
-        RecorderId = $RecorderId
-        RecorderHostname = $RecorderHostname
-        VncPort = [int]$VncPort
-        FfmpegPath = "ffmpeg.exe"
-        AudioApi = "dshow"
-        AudioDevice = "CABLE Output (VB-Audio Virtual Cable)"
-        Width = 1920
-        Height = 1080
-        Framerate = 60
-        ForceCfr = $true
-        VideoPreset = "medium"
-        VideoCrf = 18
-        VideoProfile = "high"
-        VideoPixFmt = "yuv420p"
-        HlsTime = 2
-        GopMult = 2
-        AudioBitrateK = 192
-        AudioSampleRate = 44100
-        AudioChannels = 2
-        VideoEncoder = "h264_nvenc"
-        HwPreset = "p5"
-        HwRc = "cbr"
-        VideoBitrateK = 9000
-        VideoMaxrateK = 9000
-        VideoBufsizeK = 18000
-        OutputDirectory = "recordings"
-        FinalizeHardCapMinutes = 120
-        FinalizeStallCapMinutes = 5
-        FinalizeLogIntervalSeconds = 20
+    # Read both files (preserve structure and order)
+    $sourceJson = Get-Content $sourceConfig -Raw | ConvertFrom-Json -AsHashtable
+    $destJson   = Get-Content $destConfig -Raw | ConvertFrom-Json -AsHashtable
+
+    # Create an Ordered Dictionary to hold the final result to preserve Source order
+    $mergedRecorder = [ordered]@{}
+
+    # We iterate through the SOURCE keys to ensure the new file follows the Source's order
+    foreach ($key in $sourceJson.Recorder.Keys) {
+        if ($destJson.Recorder.ContainsKey($key)) {
+            # Priority: Existing Destination Value
+            $mergedRecorder[$key] = $destJson.Recorder[$key]
+        }
+        else {
+            # Missing in Destination: Use Source Value
+            $mergedRecorder[$key] = $sourceJson.Recorder[$key]
+            Write-Host "  Adding new setting: $key" -ForegroundColor Green
+        }
     }
+
+    # Reconstruct the root object
+    $finalObject = @{ Recorder = $mergedRecorder }
+
+    # Save the file (Depth 10 ensures nested objects aren't cut off)
+    $finalObject | ConvertTo-Json -Depth 10 | Set-Content $destConfig
 }
-
-# Always create/update the example file
-$appSettings | ConvertTo-Json -Depth 10 | Set-Content $appSettingsExamplePath -Encoding UTF8
-Write-Host "  Configuration saved to $appSettingsExamplePath" -ForegroundColor Green
-
-# Only create appsettings.json if it doesn't already exist
-if (-not (Test-Path $appSettingsPath)) {
-    Copy-Item -Path $appSettingsExamplePath -Destination $appSettingsPath -Force
-    Write-Host "  Created $appSettingsPath from example" -ForegroundColor Green
-} else {
-    Write-Host "  Existing $appSettingsPath preserved" -ForegroundColor Yellow
+else {
+    # Destination doesn't exist? Just copy the source file.
+    Write-Host "No existing config found. Copying fresh appsettings.json." -ForegroundColor Green
+    Copy-Item -Path $sourceConfig -Destination $destConfig
 }
 
 # Step 6: Configure firewall
 Write-Host ""
-Write-Host "Step 6: Configuring Windows Firewall..." -ForegroundColor Cyan
+Write-Host "Configuring Windows Firewall..." -ForegroundColor Cyan
 
 if (-not $SkipFirewall) {
     try {
@@ -353,7 +339,7 @@ if (-not $SkipFirewall) {
 
 # Step 7: Create Scheduled Task (optional)
 Write-Host ""
-Write-Host "Step 7: Task Scheduler setup..." -ForegroundColor Cyan
+Write-Host "Task Scheduler setup..." -ForegroundColor Cyan
  
 if (-not $SkipScheduledTask) {
     $taskName = "RecastWindowsRecorder"
@@ -405,7 +391,7 @@ if (-not $SkipScheduledTask) {
 
 # Step 8: Create desktop shortcut
 Write-Host ""
-Write-Host "Step 8: Creating shortcuts..." -ForegroundColor Cyan
+Write-Host "Creating shortcuts..." -ForegroundColor Cyan
 
 $desktopPath = [Environment]::GetFolderPath("CommonDesktopDirectory")
 $shortcutPath = Join-Path $desktopPath "Recast Recorder.lnk"
