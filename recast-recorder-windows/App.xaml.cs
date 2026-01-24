@@ -77,14 +77,28 @@ namespace Recast.WindowsRecorder
                 var services = _host.Services;
                 var state = services.GetRequiredService<RecorderState>();
 
-                try
+                var webAttempts = 6;
+                var webDelaySeconds = 5;
+                for (var attempt = 1; attempt <= webAttempts; attempt++)
                 {
-                    _web = await WebServer.StartAsync(services, config);
-                }
-                catch (Exception webEx)
-                {
-                    Log.Error(webEx, "Failed to start embedded web server");
-                    MessageBox.Show($"Failed to start embedded web server: {webEx.Message}\nCheck if port 5001 is in use.", "Startup Error");
+                    try
+                    {
+                        _web = await WebServer.StartAsync(services, config);
+                        break;
+                    }
+                    catch (Exception webEx)
+                    {
+                        Log.Error(webEx, "Failed to start embedded web server (attempt {Attempt}/{Total})", attempt, webAttempts);
+                        if (attempt == webAttempts)
+                        {
+                            MessageBox.Show($"Failed to start embedded web server after {webAttempts} attempts: {webEx.Message}\nCheck if port 5001 is in use.", "Startup Error");
+                        }
+                        else
+                        {
+                            Log.Warning("Web server startup failed, retrying in {DelaySeconds}s", webDelaySeconds);
+                            await Task.Delay(TimeSpan.FromSeconds(webDelaySeconds));
+                        }
+                    }
                 }
 
                 var win = new MainWindow { DataContext = state };
