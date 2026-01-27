@@ -258,21 +258,6 @@ namespace Recast.WindowsRecorder.Services
             var ddagrabOutputIdx = cfg?.DdagrabOutputIdx ?? 0;
             var ddagrabDrawMouse = cfg?.DdagrabDrawMouse ?? true;
 
-            // Probe DirectShow audio devices (log list) and pick common system-mix names
-            string? dshowAudio = null;
-            try
-            {
-                var devices = EnumerateDshowAudioDevices(ffmpeg);
-                if (devices.Count > 0) _log.LogInformation("dshow audio devices: {List}", string.Join(", ", devices));
-                dshowAudio = devices.FirstOrDefault(n => n.Contains("virtual-audio-capturer", StringComparison.OrdinalIgnoreCase))
-                              ?? devices.FirstOrDefault(n => n.Contains("Stereo Mix", StringComparison.OrdinalIgnoreCase))
-                              ?? devices.FirstOrDefault(n => n.Contains("CABLE Output", StringComparison.OrdinalIgnoreCase))
-                              ?? devices.FirstOrDefault(n => n.Contains("System Virtual Line", StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrWhiteSpace(dshowAudio))
-                    _log.LogInformation("Selected dshow audio device: {Dev}", dshowAudio);
-            }
-            catch { }
-
             // Build video input args based on capture method
             string videoInputArgs;
             if (captureMethod == "ddagrab")
@@ -293,12 +278,6 @@ namespace Recast.WindowsRecorder.Services
                 _log.LogInformation("Using gdigrab capture method");
             }
 
-            var chainAttempts = new List<string>
-            {
-                // Video-only capture (no audio)
-                $"{videoInputArgs} -an {outArgs}",
-            };
-
             var audioApi = _options?.CurrentValue?.AudioApi?.Trim().ToLowerInvariant();
             var audioDev = _options?.CurrentValue?.AudioDevice?.Trim();
 
@@ -307,36 +286,27 @@ namespace Recast.WindowsRecorder.Services
             var audioTqsArg = $"-thread_queue_size {audioTqs}";
             var dshowAudioArgs = $"-itsoffset 0.1 {audioTqsArg} -rtbufsize 256M -f dshow -audio_buffer_size 50 -use_wallclock_as_timestamps 1";
 
-            if (!string.IsNullOrWhiteSpace(audioDev))
+            string tail;
+            if (!string.IsNullOrWhiteSpace(audioDev) && (string.IsNullOrEmpty(audioApi) || audioApi == "dshow"))
             {
-                if (string.IsNullOrEmpty(audioApi) || audioApi == "dshow")
-                {
-                    // Insert capture with configured audio device at front
-                    if (_audioDisabledForJobId != jobId)
-                    {
-                        chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{audioDev}\" {outArgs}");
-                        _log.LogInformation("Using configured dshow audio device: {Dev}", audioDev);
-                    }
-                    else
-                    {
-                        _log.LogWarning("Audio disabled for job {JobId} due to prior audio start failure; skipping configured audio device", jobId);
-                    }
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(dshowAudio))
-            {
-                // Also try an auto-picked dshow system-mix device
                 if (_audioDisabledForJobId != jobId)
                 {
-                    chainAttempts.Insert(0, $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{dshowAudio}\" {outArgs}");
+                    tail = $"{videoInputArgs} {dshowAudioArgs} -i audio=\"{audioDev}\" {outArgs}";
+                    _log.LogInformation("Using configured dshow audio device: {Dev}", audioDev);
+                }
+                else
+                {
+                    _log.LogWarning("Audio disabled for job {JobId} due to prior audio start failure; skipping configured audio device", jobId);
+                    tail = $"{videoInputArgs} -an {outArgs}";
                 }
             }
-
-            foreach (var tail in chainAttempts)
+            else
             {
-                var args = commonArgs + tail;
-                var fullCommand = $"{ffmpeg} {args}";
+                tail = $"{videoInputArgs} -an {outArgs}";
+            }
+
+            var args = commonArgs + tail;
+            var fullCommand = $"{ffmpeg} {args}";
                 
                 // Pre-flight system diagnostics
                 _log.LogInformation("========== Pre-Flight System Diagnostics ==========");
