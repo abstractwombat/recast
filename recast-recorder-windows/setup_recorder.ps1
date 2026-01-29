@@ -276,21 +276,25 @@ if (Test-Path $destConfig) {
     Write-Host "Merging appsettings.json..." -ForegroundColor Cyan
 
     # Read both files (preserve structure and order)
-    $sourceJson = Get-Content $sourceConfig -Raw | ConvertFrom-Json -AsHashtable
-    $destJson   = Get-Content $destConfig -Raw | ConvertFrom-Json -AsHashtable
+    # Note: removed -AsHashtable for compatibility with PowerShell 5.1
+    $sourceJson = Get-Content $sourceConfig -Raw | ConvertFrom-Json
+    $destJson   = Get-Content $destConfig -Raw | ConvertFrom-Json
 
     # Create an Ordered Dictionary to hold the final result to preserve Source order
     $mergedRecorder = [ordered]@{}
 
     # We iterate through the SOURCE keys to ensure the new file follows the Source's order
-    foreach ($key in $sourceJson.Recorder.Keys) {
-        if ($destJson.Recorder.ContainsKey($key)) {
+    # Using PSObject.Properties to iterate over PSCustomObject
+    foreach ($prop in $sourceJson.Recorder.PSObject.Properties) {
+        $key = $prop.Name
+        # Check if destination has this property
+        if ($destJson.Recorder.PSObject.Properties.Name -contains $key) {
             # Priority: Existing Destination Value
-            $mergedRecorder[$key] = $destJson.Recorder[$key]
+            $mergedRecorder[$key] = $destJson.Recorder.$key
         }
         else {
             # Missing in Destination: Use Source Value
-            $mergedRecorder[$key] = $sourceJson.Recorder[$key]
+            $mergedRecorder[$key] = $prop.Value
             Write-Host "  Adding new setting: $key" -ForegroundColor Green
         }
     }
