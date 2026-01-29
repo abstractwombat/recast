@@ -400,11 +400,25 @@ def update_job_status():
     conversion_progress = data.get('conversion_progress')
     estimated_completion_time = data.get('estimated_completion_time')
     job_id = data.get('job_id')
+    should_retry = data.get('should_retry', False)
     
     conn = get_db()
     cursor = conn.cursor()
     
-    if status == 'CONVERTING':
+    if status == 'FAILED' and should_retry:
+        # Reset job to PENDING to allow retry
+        # Keep the original start_time, but clear recorder assignment and errors
+        logging.info(f"Job {job_id} failed with retry requested. Resetting to PENDING. Error: {error_message}")
+        cursor.execute("""
+            UPDATE jobs 
+            SET status = 'PENDING', 
+                recorder_id = NULL,
+                started_at = NULL,
+                error_message = ? || ' (retrying)',
+                conversion_progress = 0
+            WHERE id = ?
+        """, (error_message, job_id))
+    elif status == 'CONVERTING':
         # Update conversion progress
         cursor.execute("""
             UPDATE jobs 

@@ -406,6 +406,24 @@ namespace Recast.WindowsRecorder.Services
                     {
                         var msg = _rec.LastStartErrorMessage;
                         if (string.IsNullOrWhiteSpace(msg)) msg = "ffmpeg failed to start";
+                        
+                        // Check if we should retry and reboot (ddagrab failure)
+                        bool isCaptureFail = _rec.LastStartFailureCategory == "capture" || 
+                                            (msg.Contains("ddagrab", StringComparison.OrdinalIgnoreCase));
+                        
+                        // Category logging is not reliable, dda grab failures frequently provide no category
+                        if (_cfg.DdaProbeRestartOnFail == true)
+                        {
+                            _log.LogError("[job {Job}] Capture failure detected (ddagrab). Reporting failure with retry and rebooting.", jobId);
+                            await UpdateJobStatusAsync(client, jobId, "FAILED", msg, ct, shouldRetry: true);
+                            
+                            // Give the update a moment to flush
+                            await Task.Delay(2000);
+                            
+                            PerformReboot();
+                            return;
+                        }
+
                         await UpdateJobStatusAsync(client, jobId, "FAILED", msg, ct);
                         try { await _rec.StopAsync(); } catch { }
                         try { await _sessions.StopAllAsync(); } catch { }
@@ -423,6 +441,23 @@ namespace Recast.WindowsRecorder.Services
                     {
                         var msg = _rec.LastStartErrorMessage;
                         if (string.IsNullOrWhiteSpace(msg)) msg = "ffmpeg failed to start";
+                        
+                        // Check if we should retry and reboot (ddagrab failure)
+                        bool isCaptureFail = _rec.LastStartFailureCategory == "capture" || 
+                                            (msg.Contains("ddagrab", StringComparison.OrdinalIgnoreCase));
+                        
+                        // Category logging is not reliable, dda grab failures frequently provide no category
+                        if (_cfg.DdaProbeRestartOnFail == true)
+                        {
+                            _log.LogError("[job {Job}] Capture failure detected (ddagrab) in exception. Reporting failure with retry and rebooting.", jobId);
+                            await UpdateJobStatusAsync(client, jobId, "FAILED", msg, ct, shouldRetry: true);
+                            
+                            await Task.Delay(2000);
+                            
+                            PerformReboot();
+                            return;
+                        }
+                        
                         await UpdateJobStatusAsync(client, jobId, "FAILED", msg, ct);
                     }
                     catch { }
@@ -602,13 +637,33 @@ namespace Recast.WindowsRecorder.Services
             return false;
         }
 
-        private async Task UpdateJobStatusAsync(HttpClient client, int jobId, string status, string? msg, CancellationToken ct)
+        private void PerformReboot()
+        {
+            _log.LogWarning("Initiating system reboot due to ddagrab failure...");
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "shutdown",
+                    Arguments = "/r /f /t 3",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Failed to initiate system reboot");
+            }
+            Environment.Exit(2);
+        }
+
+        private async Task UpdateJobStatusAsync(HttpClient client, int jobId, string status, string? msg, CancellationToken ct, bool shouldRetry = false)
         {
             try
             {
-                var payload = new { job_id = jobId, status = status, error_message = msg };
+                var payload = new { job_id = jobId, status = status, error_message = msg, should_retry = shouldRetry };
                 var resp = await client.PostAsJsonAsync($"{_managerUrl}/api/recorder/update_job_status", payload, ct);
-                _log.LogInformation("update_job_status({JobId},{Status}) -> {Code}", jobId, status, resp.StatusCode);
+                _log.LogInformation("update_job_status({JobId},{Status},retry={Retry}) -> {Code}", jobId, status, shouldRetry, resp.StatusCode);
                 if (!resp.IsSuccessStatusCode)
                 {
                     try { var b = await resp.Content.ReadAsStringAsync(ct); _log.LogDebug("update_job_status body: {Body}", b); } catch { }
