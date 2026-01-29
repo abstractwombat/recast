@@ -639,6 +639,23 @@ namespace Recast.WindowsRecorder.Services
 
         private void PerformReboot()
         {
+            /**
+            * This is a temporary fix to reboot the system if ddagrab fails.
+            * It should be removed once the issue is resolved.
+            * Alternate options:
+            *   - Reboot the gpu device
+            *       # Get the Instance ID of the NVIDIA GPU
+            *       $gpu = Get-PnpDevice | Where-Object { $_.FriendlyName -match "NVIDIA" -and $_.Class -eq "Display" -and $_.Status -eq "OK" }
+            *       # Restart the device
+            *       if ($gpu) {
+            *           Write-Host "Restarting GPU: $($gpu.FriendlyName)..."
+            *           pnputil /restart-device $gpu.InstanceId
+            *       } else {
+            *           Write-Host "NVIDIA GPU not found."
+            *       }
+            *   - Kill dwm.exe
+            *       taskkill /f /im dwm.exe
+            */
             _log.LogWarning("Initiating system reboot due to ddagrab failure...");
             try
             {
