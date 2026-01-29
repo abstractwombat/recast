@@ -266,8 +266,7 @@ if (-not (Test-Path $publishPath)) {
 }
 
 # Copy all files EXCEPT appsettings.json
-Get-ChildItem -Path "$publishPath\*" -Exclude "appsettings.json" -Recurse | 
-Copy-Item -Destination $InstallPath -Force
+Copy-Item -Path "$publishPath\*" -Destination $InstallPath -Recurse -Force -Exclude "appsettings.json"
 Write-Host "  Copied application files to $InstallPath" -ForegroundColor Green
 
 # Handle the JSON Merge logic
