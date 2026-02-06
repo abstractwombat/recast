@@ -203,9 +203,21 @@ namespace Recast.WindowsRecorder.Services
 
             // Get FFmpeg log level from config (default to 'error' if not specified)
             var logLevel = cfg?.FfmpegLogLevel ?? "error";
+            
+            // If choppy stream detection is enabled, we need frame statistics with dup/drop counts
+            // This requires loglevel 'info' or higher, and -stats flag
+            if (choppyDetectionEnabled)
+            {
+                if (logLevel == "error" || logLevel == "warning" || logLevel == "quiet" || logLevel == "panic" || logLevel == "fatal")
+                {
+                    logLevel = "info";
+                    _log.LogInformation("Choppy stream detection enabled: overriding FFmpeg log level to 'info' to capture frame statistics");
+                }
+            }
+            var statsFlag = choppyDetectionEnabled ? "-stats " : "";
 
             // Prefer ddagrab (Desktop Duplication), fallback to gdigrab. Capture full desktop, scale/pad to output.
-            var commonArgs = $"-y -nostdin -loglevel {logLevel} ";
+            var commonArgs = $"-y -nostdin -loglevel {logLevel} {statsFlag}";
             var segTmpl = Path.Combine(CurrentDir, "seg%05d.ts");
             var vf = $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}";
             var forceCfr = (cfg?.ForceCfr == true);
