@@ -101,7 +101,7 @@ namespace Recast.WindowsRecorder.Services
 
                     CancellationTokenSource? cts = null;
                     Task? watchdog = null;
-                    if (mode == "automated" && controller == "videojs")
+                    if (mode == "automated" && (controller == "videojs" || controller == "generic"))
                     {
                         cts = new CancellationTokenSource();
                         var token = cts.Token;
@@ -218,7 +218,20 @@ namespace Recast.WindowsRecorder.Services
                                                 log.LogInformation("[Watchdog] Not in fullscreen, attempting to restore (last attempt {Ago:F0}s ago)", timeSinceLastFsAttempt.TotalSeconds);
                                                 lastFullscreenAttempt = DateTime.UtcNow;
                                                 inVideoFrame = false; // will need to re-find frame after this
-                                                try { PlayAndFullscreenVideoJs(driver, log); } catch { }
+                                                try 
+                                                { 
+                                                    if (controller == "videojs")
+                                                    {
+                                                        PlayAndFullscreenVideoJs(driver, log); 
+                                                    }
+                                                    else
+                                                    {
+                                                        // Generic fullscreen attempt
+                                                        driver.ExecuteScript("(function(){var v=document.querySelector('video'); if(v){v.muted=false; v.volume=1.0; v.play().catch(()=>{}); if(!document.fullscreenElement){try{if(v.requestFullscreen) v.requestFullscreen().catch(()=>{});}catch(e){} var btn=[...document.querySelectorAll('button')].find(b=>/full/i.test((b.textContent||''))||/full/i.test((b.getAttribute('aria-label')||''))); if(btn) try{btn.click();}catch(e){} } } })();");
+                                                        try { var body = driver.FindElement(By.TagName("body")); body?.SendKeys("f"); } catch { }
+                                                    }
+                                                } 
+                                                catch { }
                                             }
                                         }
                                         catch (Exception fsEx) 
