@@ -280,6 +280,26 @@
               <option value="false">false</option>
             </select>
           </div>
+          <div class="field">
+            <label for="choppy_stream_detection_enabled">Choppy Stream Detection</label>
+            <select id="choppy_stream_detection_enabled">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="choppy_stream_threshold_per_second">Choppy Threshold (frames/sec)</label>
+            <input type="number" id="choppy_stream_threshold_per_second" min="1" max="100" step="1" />
+          </div>
+          <div class="field">
+            <label for="choppy_stream_correction_action">Choppy Correction Action</label>
+            <select id="choppy_stream_correction_action">
+              <option value="nothing">Nothing</option>
+              <option value="restart_ffmpeg">Restart FFmpeg</option>
+              <option value="restart_gpu">Restart GPU</option>
+              <option value="reboot">Reboot System</option>
+            </select>
+          </div>
         </div>
 
         <div class="settings-section">
@@ -594,6 +614,7 @@
         const paths = data.paths || {};
         const debug = data.debug || {};
         const finalize = data.finalize || {};
+        const choppy_stream = data.choppy_stream || {};
 
         document.getElementById('capture_method').value = recording.capture_method ?? 'gdigrab';
         document.getElementById('screen_width').value = recording.screen_width ?? 1920;
@@ -633,6 +654,10 @@
         document.getElementById('dda_probe_interval_seconds').value = debug.dda_probe_interval_seconds ?? 300;
         document.getElementById('dda_probe_timeout_seconds').value = debug.dda_probe_timeout_seconds ?? 8;
         document.getElementById('dda_probe_restart_on_fail').value = String(debug.dda_probe_restart_on_fail ?? false);
+
+        document.getElementById('choppy_stream_detection_enabled').value = String(choppy_stream.detection_enabled ?? false);
+        document.getElementById('choppy_stream_threshold_per_second').value = choppy_stream.threshold_per_second ?? 10;
+        document.getElementById('choppy_stream_correction_action').value = choppy_stream.correction_action ?? 'restart_gpu';
 
         document.getElementById('finalize_hard_cap_minutes').value = finalize.hard_cap_minutes ?? '';
         document.getElementById('finalize_stall_cap_minutes').value = finalize.stall_cap_minutes ?? '';
@@ -700,6 +725,11 @@
           hard_cap_minutes: parseInt(document.getElementById('finalize_hard_cap_minutes').value, 10),
           stall_cap_minutes: parseInt(document.getElementById('finalize_stall_cap_minutes').value, 10),
           log_interval_seconds: parseInt(document.getElementById('finalize_log_interval_seconds').value, 10),
+        },
+        choppy_stream: {
+          detection_enabled: (document.getElementById('choppy_stream_detection_enabled').value === 'true'),
+          threshold_per_second: parseInt(document.getElementById('choppy_stream_threshold_per_second').value, 10),
+          correction_action: document.getElementById('choppy_stream_correction_action').value,
         }
       };
       
