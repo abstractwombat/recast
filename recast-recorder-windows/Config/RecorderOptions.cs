@@ -96,5 +96,10 @@ namespace Recast.WindowsRecorder.Config
         public int? DdaProbeIntervalSeconds { get; set; }
         public int? DdaProbeTimeoutSeconds { get; set; }
         public bool? DdaProbeRestartOnFail { get; set; }
+
+        // Choppy stream detection and correction settings
+        public bool? ChoppyStreamDetectionEnabled { get; set; }
+        public int? ChoppyStreamThresholdPerSecond { get; set; }
+        public string? ChoppyStreamCorrectionAction { get; set; }
     }
 }

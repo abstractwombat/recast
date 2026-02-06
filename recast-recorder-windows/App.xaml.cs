@@ -66,6 +66,7 @@ namespace Recast.WindowsRecorder
                         services.AddSingleton<RecorderState>();
                         services.AddSingleton<VncManager>();
                         services.AddSingleton<SessionManager>();
+                        services.AddSingleton<GpuRestartService>();
                         services.AddSingleton<RecordingManager>();
                         services.AddHttpClient();
                         services.AddHostedService<ManagementService>();

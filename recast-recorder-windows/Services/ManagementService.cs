@@ -58,6 +58,20 @@ namespace Recast.WindowsRecorder.Services
             _state.RecorderId = _recorderId;
             _state.Hostname = _hostname;
             _state.Status = "IDLE";
+
+            // Set up failure callback for RecordingManager to notify server before reboot
+            _rec.SetJobFailureCallback(async (jobId, message) =>
+            {
+                try
+                {
+                    using var client = _http.CreateClient();
+                    await UpdateJobStatusAsync(client, jobId, "FAILED", message, CancellationToken.None, shouldRetry: true);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Failed to notify server of job failure for job {JobId}", jobId);
+                }
+            });
         }
 
         private async Task MaybeRunDdaProbeAsync(CancellationToken ct)

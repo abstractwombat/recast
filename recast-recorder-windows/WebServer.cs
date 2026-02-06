@@ -43,6 +43,7 @@ namespace Recast.WindowsRecorder
             // Share instances from root host so state is consistent
             builder.Services.AddSingleton(rootServices.GetRequiredService<VncManager>());
             builder.Services.AddSingleton(rootServices.GetRequiredService<SessionManager>());
+            builder.Services.AddSingleton(rootServices.GetRequiredService<GpuRestartService>());
             builder.Services.AddSingleton(rootServices.GetRequiredService<RecordingManager>());
             builder.Services.AddSingleton(rootServices.GetRequiredService<RecorderState>());
             builder.Services.AddSingleton(rootServices.GetRequiredService<IOptionsMonitor<RecorderOptions>>());
@@ -232,6 +233,12 @@ namespace Recast.WindowsRecorder
                         hard_cap_minutes = cfg.FinalizeHardCapMinutes,
                         stall_cap_minutes = cfg.FinalizeStallCapMinutes,
                         log_interval_seconds = cfg.FinalizeLogIntervalSeconds,
+                    },
+                    choppy_stream = new
+                    {
+                        detection_enabled = cfg.ChoppyStreamDetectionEnabled ?? false,
+                        threshold_per_second = cfg.ChoppyStreamThresholdPerSecond ?? 10,
+                        correction_action = cfg.ChoppyStreamCorrectionAction ?? "restart_gpu",
                     }
                 });
             });
@@ -313,6 +320,12 @@ namespace Recast.WindowsRecorder
                         SetIfPresent(recorder, finalize, "hard_cap_minutes", "FinalizeHardCapMinutes");
                         SetIfPresent(recorder, finalize, "stall_cap_minutes", "FinalizeStallCapMinutes");
                         SetIfPresent(recorder, finalize, "log_interval_seconds", "FinalizeLogIntervalSeconds");
+                    }
+                    if (root.TryGetProperty("choppy_stream", out var choppyStream))
+                    {
+                        SetIfPresent(recorder, choppyStream, "detection_enabled", "ChoppyStreamDetectionEnabled");
+                        SetIfPresent(recorder, choppyStream, "threshold_per_second", "ChoppyStreamThresholdPerSecond");
+                        SetIfPresent(recorder, choppyStream, "correction_action", "ChoppyStreamCorrectionAction");
                     }
 
                     var tmp = settingsPath + ".tmp";

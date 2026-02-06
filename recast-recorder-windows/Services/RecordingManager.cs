@@ -29,7 +29,11 @@ namespace Recast.WindowsRecorder.Services
         private int? _audioDisabledForJobId;
 
         private readonly IOptionsMonitor<RecorderOptions>? _options;
+        private readonly GpuRestartService? _gpuRestartService;
         private volatile bool _finalizing;
+        private FrameDropDetector? _frameDropDetector;
+        private volatile bool _choppyStreamCorrectionInProgress;
+        private Func<int, string, Task>? _jobFailureCallback;
 
         [DllImport("user32.dll")]
         private static extern bool GetInputState();
@@ -47,12 +51,18 @@ namespace Recast.WindowsRecorder.Services
         private const int SM_CYSCREEN = 1;
         private const int SM_CMONITORS = 80;
 
-        public RecordingManager(ILogger<RecordingManager> log, IOptionsMonitor<RecorderOptions>? options = null)
+        public RecordingManager(ILogger<RecordingManager> log, IOptionsMonitor<RecorderOptions>? options = null, GpuRestartService? gpuRestartService = null)
         {
             _log = log;
             _options = options;
+            _gpuRestartService = gpuRestartService;
             LiveRoot = Path.Combine(AppContext.BaseDirectory, "hls");
             Directory.CreateDirectory(LiveRoot);
+        }
+
+        public void SetJobFailureCallback(Func<int, string, Task> callback)
+        {
+            _jobFailureCallback = callback;
         }
 
         public bool IsReady => CurrentDir != null && File.Exists(Path.Combine(CurrentDir!, "stream.m3u8")) && SegmentCount > 0;
@@ -145,7 +155,7 @@ namespace Recast.WindowsRecorder.Services
             }
         }
 
-        public async Task<bool> StartAsync(int jobId, int width = 1920, int height = 1080, int framerate = 30)
+        public async Task<bool> StartAsync(int jobId, int width = 1920, int height = 1080, int framerate = 30, bool continueStream = false)
         {
             await StopAsync();
             var cfg = _options?.CurrentValue;
@@ -157,10 +167,32 @@ namespace Recast.WindowsRecorder.Services
             CurrentDir = Path.Combine(LiveRoot, $"job_{jobId}");
             Directory.CreateDirectory(CurrentDir);
             var playlist = Path.Combine(CurrentDir, "stream.m3u8");
-            try { File.Delete(playlist); } catch { }
-            SegmentCount = 0;
+            
+            if (!continueStream)
+            {
+                try { File.Delete(playlist); } catch { }
+                SegmentCount = 0;
+            }
+            else
+            {
+                _log.LogInformation("Continuing existing HLS stream for job {JobId}, preserving {Count} segments", jobId, SegmentCount);
+            }
+            
             LastStartErrorMessage = null;
             LastStartFailureCategory = null;
+            _choppyStreamCorrectionInProgress = false;
+
+            var choppyDetectionEnabled = cfg?.ChoppyStreamDetectionEnabled ?? false;
+            if (choppyDetectionEnabled)
+            {
+                _frameDropDetector = new FrameDropDetector(_log);
+                _log.LogInformation("Choppy stream detection enabled with threshold={Threshold}/s, action={Action}",
+                    cfg?.ChoppyStreamThresholdPerSecond ?? 10, cfg?.ChoppyStreamCorrectionAction ?? "restart_gpu");
+            }
+            else
+            {
+                _frameDropDetector = null;
+            }
 
             string ffmpeg = _options?.CurrentValue?.FfmpegPath
                              ?? Environment.GetEnvironmentVariable("FFMPEG")
@@ -501,6 +533,17 @@ namespace Recast.WindowsRecorder.Services
                                 if (recentStderrLines.Count > 20)
                                     recentStderrLines.RemoveAt(0);
                             }
+
+                            if (_frameDropDetector != null && !_choppyStreamCorrectionInProgress)
+                            {
+                                var threshold = cfg?.ChoppyStreamThresholdPerSecond ?? 10;
+                                if (_frameDropDetector.ProcessFFmpegLine(line, threshold, out int dupRate, out int dropRate))
+                                {
+                                    _choppyStreamCorrectionInProgress = true;
+                                    _ = Task.Run(async () => await HandleChoppyStreamAsync(jobId, cfg));
+                                }
+                            }
+
                             var lower = line.ToLowerInvariant();
                             if (failureCategory == null)
                             {
@@ -1191,6 +1234,131 @@ namespace Recast.WindowsRecorder.Services
                    $" -c:a aac -ar {aRate} -b:a {aBr}k -ac {aCh} -af aresample=async=1:min_hard_comp=0.1:first_pts=0" +
                    $" -hls_time {hlsTime} -hls_list_size {hlsListSize} -hls_flags {hlsFlags} -hls_playlist_type {hlsPlaylistType}" +
                    $" -hls_segment_filename \"{segTmpl}\" -f hls \"{playlist}\"";
+        }
+
+        private async Task HandleChoppyStreamAsync(int jobId, RecorderOptions? cfg)
+        {
+            try
+            {
+                var action = cfg?.ChoppyStreamCorrectionAction?.Trim().ToLowerInvariant() ?? "restart_gpu";
+                _log.LogWarning("[ChoppyStreamCorrection] Choppy stream detected for job {JobId}, executing action: {Action}", jobId, action);
+
+                if (action == "nothing" || action == "none")
+                {
+                    _log.LogInformation("[ChoppyStreamCorrection] Action is 'nothing', no correction will be performed");
+                    _choppyStreamCorrectionInProgress = false;
+                    return;
+                }
+
+                if (action == "restart_ffmpeg")
+                {
+                    _log.LogInformation("[ChoppyStreamCorrection] Restarting FFmpeg process for job {JobId}", jobId);
+                    
+                    await StopAsync();
+                    await Task.Delay(2000);
+                    
+                    var width = cfg?.Width ?? 1920;
+                    var height = cfg?.Height ?? 1080;
+                    var framerate = cfg?.Framerate ?? 30;
+                    
+                    var success = await StartAsync(jobId, width, height, framerate, continueStream: true);
+                    if (success)
+                    {
+                        _log.LogInformation("[ChoppyStreamCorrection] FFmpeg restarted successfully for job {JobId}, stream continued", jobId);
+                    }
+                    else
+                    {
+                        _log.LogError("[ChoppyStreamCorrection] Failed to restart FFmpeg for job {JobId}", jobId);
+                    }
+                    
+                    _choppyStreamCorrectionInProgress = false;
+                    return;
+                }
+
+                if (action == "restart_gpu")
+                {
+                    _log.LogInformation("[ChoppyStreamCorrection] Restarting GPU and FFmpeg process for job {JobId}", jobId);
+                    
+                    await StopAsync();
+                    
+                    if (_gpuRestartService != null)
+                    {
+                        var gpuSuccess = await _gpuRestartService.RestartNvidiaGpuAsync();
+                        if (!gpuSuccess)
+                        {
+                            _log.LogWarning("[ChoppyStreamCorrection] GPU restart failed, will still attempt to restart FFmpeg");
+                        }
+                    }
+                    else
+                    {
+                        _log.LogWarning("[ChoppyStreamCorrection] GpuRestartService not available, skipping GPU restart");
+                    }
+                    
+                    await Task.Delay(3000);
+                    
+                    var width = cfg?.Width ?? 1920;
+                    var height = cfg?.Height ?? 1080;
+                    var framerate = cfg?.Framerate ?? 30;
+                    
+                    var success = await StartAsync(jobId, width, height, framerate, continueStream: true);
+                    if (success)
+                    {
+                        _log.LogInformation("[ChoppyStreamCorrection] GPU and FFmpeg restarted successfully for job {JobId}, stream continued", jobId);
+                    }
+                    else
+                    {
+                        _log.LogError("[ChoppyStreamCorrection] Failed to restart FFmpeg after GPU restart for job {JobId}", jobId);
+                    }
+                    
+                    _choppyStreamCorrectionInProgress = false;
+                    return;
+                }
+
+                if (action == "reboot")
+                {
+                    _log.LogWarning("[ChoppyStreamCorrection] Rebooting system for job {JobId}", jobId);
+                    
+                    await StopAsync();
+                    
+                    // Notify server of failure before rebooting
+                    if (_jobFailureCallback != null)
+                    {
+                        try
+                        {
+                            _log.LogInformation("[ChoppyStreamCorrection] Notifying server of failure before reboot for job {JobId}", jobId);
+                            await _jobFailureCallback(jobId, "Choppy stream detected - system rebooting for recovery");
+                            await Task.Delay(2000); // Give notification time to flush
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogError(ex, "[ChoppyStreamCorrection] Failed to notify server before reboot for job {JobId}", jobId);
+                        }
+                    }
+                    else
+                    {
+                        _log.LogWarning("[ChoppyStreamCorrection] No failure callback configured, server will not be notified before reboot");
+                    }
+                    
+                    if (_gpuRestartService != null)
+                    {
+                        _gpuRestartService.PerformReboot();
+                    }
+                    else
+                    {
+                        _log.LogError("[ChoppyStreamCorrection] GpuRestartService not available, cannot reboot");
+                    }
+                    
+                    return;
+                }
+
+                _log.LogWarning("[ChoppyStreamCorrection] Unknown action '{Action}', no correction performed", action);
+                _choppyStreamCorrectionInProgress = false;
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "[ChoppyStreamCorrection] Exception during choppy stream correction for job {JobId}", jobId);
+                _choppyStreamCorrectionInProgress = false;
+            }
         }
 
     }
