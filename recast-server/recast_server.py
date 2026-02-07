@@ -783,6 +783,28 @@ def get_job_status(job_id):
     
     job_dict = dict(job)
     
+    # Convert UTC timestamps to local time for display
+    for time_field in ['start_time', 'end_time', 'created_at', 'started_at', 'completed_at']:
+        time_string = job_dict.get(time_field)
+        if time_string:
+            try:
+                dt_object = None
+                try:
+                    dt_object = datetime.datetime.fromisoformat(time_string)
+                except Exception:
+                    try:
+                        dt_object = datetime.datetime.strptime(time_string, "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        pass
+                
+                if dt_object:
+                    if dt_object.tzinfo is None:
+                        dt_object = dt_object.replace(tzinfo=timezone.utc)
+                    local_dt = dt_object.astimezone()
+                    job_dict[time_field] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+    
     # Get associated recording if exists
     cursor.execute("SELECT * FROM recordings WHERE job_id = ?", (job_id,))
     recording = cursor.fetchone()
