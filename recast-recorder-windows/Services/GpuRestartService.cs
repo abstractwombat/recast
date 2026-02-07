@@ -20,7 +20,7 @@ namespace Recast.WindowsRecorder.Services
             
             var script = @"
 # Get the Instance ID of the NVIDIA GPU
-$gpu = Get-PnpDevice | Where-Object { $_.FriendlyName -match ""NVIDIA"" -and $_.Class -eq ""Display"" -and $_.Status -eq ""OK"" }
+$gpu = Get-PnpDevice | Where-Object { $_.FriendlyName -match 'NVIDIA' -and $_.Class -eq 'Display' -and $_.Status -eq 'OK' }
 # Restart the device
 if ($gpu) {
     Write-Host ""Restarting GPU: $($gpu.FriendlyName)...""
@@ -33,12 +33,16 @@ if ($gpu) {
 
             try
             {
+                // Encode script as Base64 to avoid escaping issues
+                var scriptBytes = System.Text.Encoding.Unicode.GetBytes(script);
+                var encodedScript = Convert.ToBase64String(scriptBytes);
+                
                 using var proc = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
                         FileName = "powershell.exe",
-                        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "`\"")}\"",
+                        Arguments = $"-NoProfile -ExecutionPolicy Bypass -EncodedCommand {encodedScript}",
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
