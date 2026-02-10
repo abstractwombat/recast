@@ -101,5 +101,6 @@ namespace Recast.WindowsRecorder.Config
         public bool? ChoppyStreamDetectionEnabled { get; set; }
         public int? ChoppyStreamThresholdPerSecond { get; set; }
         public string? ChoppyStreamCorrectionAction { get; set; }
+        public int? ChoppyStreamGracePeriodSeconds { get; set; }
     }
 }

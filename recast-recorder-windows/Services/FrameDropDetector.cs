@@ -15,10 +15,13 @@ namespace Recast.WindowsRecorder.Services
         private int _lastDup = 0;
         private int _lastDrop = 0;
         private DateTimeOffset _lastMetricTime = DateTimeOffset.UtcNow;
+        private DateTimeOffset _createdAt = DateTimeOffset.UtcNow;
+        private int _gracePeriodSeconds;
 
-        public FrameDropDetector(ILogger log)
+        public FrameDropDetector(ILogger log, int gracePeriodSeconds = 15)
         {
             _log = log;
+            _gracePeriodSeconds = gracePeriodSeconds;
         }
 
         public bool ProcessFFmpegLine(string line, int thresholdPerSecond, out int dupRate, out int dropRate)
@@ -46,6 +49,9 @@ namespace Recast.WindowsRecorder.Services
                     dupRate = (int)(dupDelta / timeDelta);
                     dropRate = (int)(dropDelta / timeDelta);
 
+                    // Skip detection during grace period after start/reset
+                    var inGracePeriod = (now - _createdAt).TotalSeconds < _gracePeriodSeconds;
+
                     var metrics = new FrameMetrics
                     {
                         Timestamp = now,
@@ -71,7 +77,7 @@ namespace Recast.WindowsRecorder.Services
                         _lastLogTime = now;
                     }
 
-                    if (dupRate > thresholdPerSecond || dropRate > thresholdPerSecond)
+                    if (!inGracePeriod && (dupRate > thresholdPerSecond || dropRate > thresholdPerSecond))
                     {
                         _log.LogWarning(
                             "[FrameDropDetector] CHOPPY STREAM DETECTED! dupRate={DupRate}/s dropRate={DropRate}/s threshold={Threshold}/s",
@@ -97,6 +103,7 @@ namespace Recast.WindowsRecorder.Services
                 _lastDrop = 0;
                 _lastMetricTime = DateTimeOffset.UtcNow;
                 _lastLogTime = DateTimeOffset.MinValue;
+                _createdAt = DateTimeOffset.UtcNow;
             }
         }
 

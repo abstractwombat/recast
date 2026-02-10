@@ -33,6 +33,7 @@ namespace Recast.WindowsRecorder.Services
         private volatile bool _finalizing;
         private FrameDropDetector? _frameDropDetector;
         private volatile bool _choppyStreamCorrectionInProgress;
+        private CancellationTokenSource? _choppyCts;
         private Func<int, string, Task>? _jobFailureCallback;
 
         [DllImport("user32.dll")]
@@ -181,13 +182,16 @@ namespace Recast.WindowsRecorder.Services
             LastStartErrorMessage = null;
             LastStartFailureCategory = null;
             _choppyStreamCorrectionInProgress = false;
+            try { _choppyCts?.Cancel(); } catch { }
+            _choppyCts = new CancellationTokenSource();
 
             var choppyDetectionEnabled = cfg?.ChoppyStreamDetectionEnabled ?? false;
+            var gracePeriod = cfg?.ChoppyStreamGracePeriodSeconds ?? 15;
             if (choppyDetectionEnabled)
             {
-                _frameDropDetector = new FrameDropDetector(_log);
-                _log.LogInformation("Choppy stream detection enabled with threshold={Threshold}/s, action={Action}",
-                    cfg?.ChoppyStreamThresholdPerSecond ?? 10, cfg?.ChoppyStreamCorrectionAction ?? "restart_gpu");
+                _frameDropDetector = new FrameDropDetector(_log, gracePeriod);
+                _log.LogInformation("Choppy stream detection enabled with threshold={Threshold}/s, action={Action}, grace={Grace}s",
+                    cfg?.ChoppyStreamThresholdPerSecond ?? 45, cfg?.ChoppyStreamCorrectionAction ?? "restart_gpu", gracePeriod);
             }
             else
             {
@@ -548,11 +552,12 @@ namespace Recast.WindowsRecorder.Services
 
                             if (_frameDropDetector != null && !_choppyStreamCorrectionInProgress)
                             {
-                                var threshold = cfg?.ChoppyStreamThresholdPerSecond ?? 10;
+                                var threshold = cfg?.ChoppyStreamThresholdPerSecond ?? 45;
                                 if (_frameDropDetector.ProcessFFmpegLine(line, threshold, out int dupRate, out int dropRate))
                                 {
                                     _choppyStreamCorrectionInProgress = true;
-                                    _ = Task.Run(async () => await HandleChoppyStreamAsync(jobId, cfg));
+                                    var cts = _choppyCts;
+                                    _ = Task.Run(async () => await HandleChoppyStreamAsync(jobId, cfg, cts?.Token ?? CancellationToken.None));
                                 }
                             }
 
@@ -769,6 +774,9 @@ namespace Recast.WindowsRecorder.Services
 
         public async Task<bool> StopAsync()
         {
+            // Cancel any in-flight choppy stream correction so it won't restart ffmpeg
+            try { _choppyCts?.Cancel(); } catch { }
+
             var p = _proc;
             if (p == null) return true;
             try
@@ -1248,12 +1256,19 @@ namespace Recast.WindowsRecorder.Services
                    $" -hls_segment_filename \"{segTmpl}\" -f hls \"{playlist}\"";
         }
 
-        private async Task HandleChoppyStreamAsync(int jobId, RecorderOptions? cfg)
+        private async Task HandleChoppyStreamAsync(int jobId, RecorderOptions? cfg, CancellationToken ct)
         {
             try
             {
                 var action = cfg?.ChoppyStreamCorrectionAction?.Trim().ToLowerInvariant() ?? "restart_gpu";
                 _log.LogWarning("[ChoppyStreamCorrection] Choppy stream detected for job {JobId}, executing action: {Action}", jobId, action);
+
+                if (ct.IsCancellationRequested)
+                {
+                    _log.LogInformation("[ChoppyStreamCorrection] Cancelled before executing action for job {JobId} (job already ended)", jobId);
+                    _choppyStreamCorrectionInProgress = false;
+                    return;
+                }
 
                 if (action == "nothing" || action == "none")
                 {
@@ -1268,6 +1283,13 @@ namespace Recast.WindowsRecorder.Services
                     
                     await StopAsync();
                     await Task.Delay(2000);
+
+                    if (ct.IsCancellationRequested)
+                    {
+                        _log.LogInformation("[ChoppyStreamCorrection] Cancelled before restarting FFmpeg for job {JobId} (job already ended)", jobId);
+                        _choppyStreamCorrectionInProgress = false;
+                        return;
+                    }
                     
                     var width = cfg?.Width ?? 1920;
                     var height = cfg?.Height ?? 1080;
@@ -1307,6 +1329,13 @@ namespace Recast.WindowsRecorder.Services
                     }
                     
                     await Task.Delay(3000);
+
+                    if (ct.IsCancellationRequested)
+                    {
+                        _log.LogInformation("[ChoppyStreamCorrection] Cancelled before restarting FFmpeg for job {JobId} (job already ended)", jobId);
+                        _choppyStreamCorrectionInProgress = false;
+                        return;
+                    }
                     
                     var width = cfg?.Width ?? 1920;
                     var height = cfg?.Height ?? 1080;
