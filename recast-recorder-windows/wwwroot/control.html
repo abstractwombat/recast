@@ -300,6 +300,10 @@
               <option value="reboot">Reboot System</option>
             </select>
           </div>
+          <div class="field">
+            <label for="choppy_stream_grace_period_seconds">Choppy Grace Period (sec)</label>
+            <input type="number" id="choppy_stream_grace_period_seconds" min="1" max="120" step="1" />
+          </div>
         </div>
 
         <div class="settings-section">
@@ -656,8 +660,9 @@
         document.getElementById('dda_probe_restart_on_fail').value = String(debug.dda_probe_restart_on_fail ?? false);
 
         document.getElementById('choppy_stream_detection_enabled').value = String(choppy_stream.detection_enabled ?? false);
-        document.getElementById('choppy_stream_threshold_per_second').value = choppy_stream.threshold_per_second ?? 10;
-        document.getElementById('choppy_stream_correction_action').value = choppy_stream.correction_action ?? 'restart_gpu';
+        document.getElementById('choppy_stream_threshold_per_second').value = choppy_stream.threshold_per_second ?? 30;
+        document.getElementById('choppy_stream_correction_action').value = choppy_stream.correction_action ?? 'restart_ffmpeg';
+        document.getElementById('choppy_stream_grace_period_seconds').value = choppy_stream.grace_period_seconds ?? 5;
 
         document.getElementById('finalize_hard_cap_minutes').value = finalize.hard_cap_minutes ?? '';
         document.getElementById('finalize_stall_cap_minutes').value = finalize.stall_cap_minutes ?? '';
@@ -730,6 +735,7 @@
           detection_enabled: (document.getElementById('choppy_stream_detection_enabled').value === 'true'),
           threshold_per_second: parseInt(document.getElementById('choppy_stream_threshold_per_second').value, 10),
           correction_action: document.getElementById('choppy_stream_correction_action').value,
+          grace_period_seconds: parseInt(document.getElementById('choppy_stream_grace_period_seconds').value, 5),
         }
       };
       

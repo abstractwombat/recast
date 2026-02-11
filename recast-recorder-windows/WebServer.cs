@@ -237,8 +237,9 @@ namespace Recast.WindowsRecorder
                     choppy_stream = new
                     {
                         detection_enabled = cfg.ChoppyStreamDetectionEnabled ?? false,
-                        threshold_per_second = cfg.ChoppyStreamThresholdPerSecond ?? 10,
-                        correction_action = cfg.ChoppyStreamCorrectionAction ?? "restart_gpu",
+                        threshold_per_second = cfg.ChoppyStreamThresholdPerSecond ?? 30,
+                        correction_action = cfg.ChoppyStreamCorrectionAction ?? "restart_ffmpeg",
+                        grace_period_seconds = cfg.ChoppyStreamGracePeriodSeconds ?? 5,
                     }
                 });
             });
@@ -326,6 +327,7 @@ namespace Recast.WindowsRecorder
                         SetIfPresent(recorder, choppyStream, "detection_enabled", "ChoppyStreamDetectionEnabled");
                         SetIfPresent(recorder, choppyStream, "threshold_per_second", "ChoppyStreamThresholdPerSecond");
                         SetIfPresent(recorder, choppyStream, "correction_action", "ChoppyStreamCorrectionAction");
+                        SetIfPresent(recorder, choppyStream, "grace_period_seconds", "ChoppyStreamGracePeriodSeconds");
                     }
 
                     var tmp = settingsPath + ".tmp";
