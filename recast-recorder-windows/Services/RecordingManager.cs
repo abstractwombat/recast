@@ -772,10 +772,19 @@ namespace Recast.WindowsRecorder.Services
             return false;
         }
 
-        public async Task<bool> StopAsync()
+        public async Task<bool> StopAsync(bool cancelChoppyCorrection = true)
         {
-            // Cancel any in-flight choppy stream correction so it won't restart ffmpeg
-            try { _choppyCts?.Cancel(); } catch { }
+            // By default, cancel in-flight choppy correction when stopping normally.
+            // When StopAsync is invoked *by* the correction flow, keep it alive so restart can proceed.
+            if (cancelChoppyCorrection)
+            {
+                _log.LogInformation("[Stop] StopAsync(normal): cancelling choppy correction token");
+                try { _choppyCts?.Cancel(); } catch { }
+            }
+            else
+            {
+                _log.LogInformation("[Stop] StopAsync(choppy-correction): preserving choppy correction token for restart");
+            }
 
             var p = _proc;
             if (p == null) return true;
@@ -1281,7 +1290,7 @@ namespace Recast.WindowsRecorder.Services
                 {
                     _log.LogInformation("[ChoppyStreamCorrection] Restarting FFmpeg process for job {JobId}", jobId);
                     
-                    await StopAsync();
+                    await StopAsync(cancelChoppyCorrection: false);
                     await Task.Delay(2000);
 
                     if (ct.IsCancellationRequested)
@@ -1313,7 +1322,7 @@ namespace Recast.WindowsRecorder.Services
                 {
                     _log.LogInformation("[ChoppyStreamCorrection] Restarting GPU and FFmpeg process for job {JobId}", jobId);
                     
-                    await StopAsync();
+                    await StopAsync(cancelChoppyCorrection: false);
                     
                     if (_gpuRestartService != null)
                     {
