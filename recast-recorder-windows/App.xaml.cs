@@ -5,6 +5,9 @@ using System.Windows;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using Serilog.Core;
+using Serilog.Events;
 using Serilog;
 using Recast.WindowsRecorder.Config;
 using Recast.WindowsRecorder.Models;
@@ -16,6 +19,26 @@ namespace Recast.WindowsRecorder
     {
         private IHost? _host;
         private WebServer? _web;
+        private LoggingLevelSwitch? _recorderLogLevelSwitch;
+        private IDisposable? _recorderOptionsChangeRegistration;
+
+        private static LogEventLevel ParseRecorderLogLevel(string? level, LogEventLevel fallback = LogEventLevel.Information)
+        {
+            if (string.IsNullOrWhiteSpace(level)) return fallback;
+            return level.Trim().ToLowerInvariant() switch
+            {
+                "verbose" => LogEventLevel.Verbose,
+                "debug" => LogEventLevel.Debug,
+                "information" => LogEventLevel.Information,
+                "info" => LogEventLevel.Information,
+                "warning" => LogEventLevel.Warning,
+                "warn" => LogEventLevel.Warning,
+                "error" => LogEventLevel.Error,
+                "fatal" => LogEventLevel.Fatal,
+                "critical" => LogEventLevel.Fatal,
+                _ => fallback,
+            };
+        }
 
         protected override async void OnStartup(StartupEventArgs e)
         {
@@ -41,10 +64,18 @@ namespace Recast.WindowsRecorder
 
             try
             {
+                var config = new ConfigurationBuilder()
+                    .SetBasePath(AppContext.BaseDirectory)
+                    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                    .Build();
+
+                var initialRecorderLogLevel = config["Recorder:RecorderLogLevel"];
+                _recorderLogLevelSwitch = new LoggingLevelSwitch(ParseRecorderLogLevel(initialRecorderLogLevel));
+
                 var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
                 Directory.CreateDirectory(logDir);
                 Log.Logger = new LoggerConfiguration()
-                    .MinimumLevel.Debug()
+                    .MinimumLevel.ControlledBy(_recorderLogLevelSwitch)
                     .Enrich.FromLogContext()
                     .WriteTo.File(
                         Path.Combine(logDir, "recorder-.log"),
@@ -52,11 +83,6 @@ namespace Recast.WindowsRecorder
                         rollingInterval: RollingInterval.Day,
                         retainedFileCountLimit: 7)
                     .CreateLogger();
-
-                var config = new ConfigurationBuilder()
-                    .SetBasePath(AppContext.BaseDirectory)
-                    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
-                    .Build();
 
                 _host = Host.CreateDefaultBuilder(e.Args)
                     .UseSerilog()
@@ -77,6 +103,18 @@ namespace Recast.WindowsRecorder
 
                 var services = _host.Services;
                 var state = services.GetRequiredService<RecorderState>();
+                var optionsMonitor = services.GetRequiredService<IOptionsMonitor<RecorderOptions>>();
+                _recorderOptionsChangeRegistration = optionsMonitor.OnChange(cfg =>
+                {
+                    try
+                    {
+                        if (_recorderLogLevelSwitch == null) return;
+                        var level = ParseRecorderLogLevel(cfg.RecorderLogLevel);
+                        _recorderLogLevelSwitch.MinimumLevel = level;
+                        Log.Information("Recorder log level updated to {Level}", level);
+                    }
+                    catch { }
+                });
 
                 var webAttempts = 6;
                 var webDelaySeconds = 5;
@@ -139,6 +177,8 @@ namespace Recast.WindowsRecorder
                 }
                 if (_host != null)
                 {
+                    try { _recorderOptionsChangeRegistration?.Dispose(); } catch { }
+                    _recorderOptionsChangeRegistration = null;
                     await _host.StopAsync(TimeSpan.FromSeconds(2));
                     _host.Dispose();
                     _host = null;

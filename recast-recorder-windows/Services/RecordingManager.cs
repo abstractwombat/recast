@@ -854,7 +854,7 @@ namespace Recast.WindowsRecorder.Services
                         var listPath = Path.Combine(workDir, "files.txt");
                         try { await File.WriteAllLinesAsync(listPath, segs.Select(s => $"file '{s.Replace("'", "'\\''")}'")); } catch { }
                         var finalizeLogLevel = cfg?.FfmpegLogLevel ?? "error";
-                        var argsConcat = $"-y -nostdin -loglevel {finalizeLogLevel} -f concat -safe 0 -i \"{listPath}\" -c copy -bsf:a aac_adtstoasc -movflags +faststart \"{outPath}\"";
+                        var argsConcat = $"-y -nostdin -loglevel {finalizeLogLevel} -progress pipe:1 -f concat -safe 0 -i \"{listPath}\" -c copy -bsf:a aac_adtstoasc -movflags +faststart \"{outPath}\"";
                         _log.LogInformation("Finalizing via concat: {Args}", argsConcat);
                         using var pConcat = Process.Start(new ProcessStartInfo
                         {
@@ -901,8 +901,19 @@ namespace Recast.WindowsRecorder.Services
                             int segOpened = 0;
                             long totalInBytes = 0;
                             try { foreach (var s in segs) { try { totalInBytes += new FileInfo(s).Length; } catch { } } } catch { }
+                            bool IsProcessRunningSafe(Process p)
+                            {
+                                try { return !p.HasExited; }
+                                catch { return false; }
+                            }
+
                             long lastSize = 0;
-                            var lastProgressAt = DateTime.UtcNow;
+                            long ffOutTimeUs = 0;
+                            long ffTotalSize = 0;
+                            bool sawFfmpegProgress = false;
+                            var lastMuxProgressAt = DateTime.UtcNow;
+                            var lastFfmpegHeartbeatAt = DateTime.UtcNow;
+                            var nearCompleteAt = (DateTime?)null;
                             var lastLogAt = DateTime.UtcNow;
                             var stderrTask = Task.Run(async () =>
                             {
@@ -927,7 +938,7 @@ namespace Recast.WindowsRecorder.Services
                                                         if (opened.Add(path))
                                                         {
                                                             Interlocked.Increment(ref segOpened);
-                                                            lastProgressAt = DateTime.UtcNow;
+                                                            lastMuxProgressAt = DateTime.UtcNow;
                                                         }
                                                     }
                                                 }
@@ -947,6 +958,37 @@ namespace Recast.WindowsRecorder.Services
                                     {
                                         try { if (ffLog != null) { lock (logLock) { ffLog.WriteLine($"[STDOUT] {line}"); } } } catch { }
                                         if (stdoutLines.Count < 10) stdoutLines.Add(line);
+                                        try
+                                        {
+                                            int eq = line.IndexOf('=');
+                                            if (eq > 0 && eq < line.Length - 1)
+                                            {
+                                                sawFfmpegProgress = true;
+                                                var key = line.Substring(0, eq).Trim();
+                                                var val = line.Substring(eq + 1).Trim();
+                                                if (key.Equals("out_time_us", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    if (long.TryParse(val, out var outTimeUs) && outTimeUs > ffOutTimeUs)
+                                                    {
+                                                        ffOutTimeUs = outTimeUs;
+                                                        lastMuxProgressAt = DateTime.UtcNow;
+                                                    }
+                                                }
+                                                else if (key.Equals("total_size", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    if (long.TryParse(val, out var progTotalSize) && progTotalSize > ffTotalSize)
+                                                    {
+                                                        ffTotalSize = progTotalSize;
+                                                        lastMuxProgressAt = DateTime.UtcNow;
+                                                    }
+                                                }
+                                                else if (key.Equals("progress", StringComparison.OrdinalIgnoreCase) && val.Equals("continue", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    lastFfmpegHeartbeatAt = DateTime.UtcNow;
+                                                }
+                                            }
+                                        }
+                                        catch { }
                                     }
                                 }
                                 catch { }
@@ -957,17 +999,25 @@ namespace Recast.WindowsRecorder.Services
                             var lastSzTs = DateTime.UtcNow;
                             var pollTask = Task.Run(async () =>
                             {
-                                while (!pConcat.HasExited && !pollCts.IsCancellationRequested)
+                                while (IsProcessRunningSafe(pConcat) && !pollCts.IsCancellationRequested)
                                 {
                                     try
                                     {
                                         long sz = 0;
                                         try { var fi = new FileInfo(outPath); if (fi.Exists) sz = fi.Length; } catch { }
-                                        if (sz > lastSize) { lastSize = sz; lastProgressAt = DateTime.UtcNow; }
+                                        if (sz > lastSize)
+                                        {
+                                            lastSize = sz;
+                                            if (!sawFfmpegProgress) lastMuxProgressAt = DateTime.UtcNow;
+                                        }
                                         if ((DateTime.UtcNow - lastLogAt) >= TimeSpan.FromSeconds(logInterval))
                                         {
                                             lastLogAt = DateTime.UtcNow;
                                             double pct = (totalInBytes > 0) ? Math.Max(0, Math.Min(100.0, (sz * 100.0) / totalInBytes)) : 0.0;
+                                            if (pct >= 95.0)
+                                            {
+                                                nearCompleteAt ??= DateTime.UtcNow;
+                                            }
                                             int done = Math.Max(segOpened, opened.Count);
                                             int tot = segs.Count;
                                             double etaSec = 0;
@@ -997,18 +1047,33 @@ namespace Recast.WindowsRecorder.Services
 
                             var hardCap = TimeSpan.FromMinutes(_options?.CurrentValue?.FinalizeHardCapMinutes ?? 45);
                             var stallCap = TimeSpan.FromMinutes(_options?.CurrentValue?.FinalizeStallCapMinutes ?? 2);
+                            var nearCompleteStallCap = TimeSpan.FromMinutes(Math.Max(stallCap.TotalMinutes, 20));
+                            var ffmpegHeartbeatGrace = TimeSpan.FromMinutes(2);
                             var startAt = DateTime.UtcNow;
-                            while (!pConcat.HasExited)
+                            string? timeoutReason = null;
+                            while (IsProcessRunningSafe(pConcat))
                             {
-                                if ((DateTime.UtcNow - startAt) > hardCap) break;
-                                if ((DateTime.UtcNow - lastProgressAt) > stallCap) break;
+                                var now = DateTime.UtcNow;
+                                if ((now - startAt) > hardCap)
+                                {
+                                    timeoutReason = $"hard-cap exceeded ({hardCap.TotalMinutes:F0}m)";
+                                    break;
+                                }
+                                var activeStallCap = nearCompleteAt.HasValue ? nearCompleteStallCap : stallCap;
+                                if ((now - lastMuxProgressAt) > activeStallCap && (now - lastFfmpegHeartbeatAt) > ffmpegHeartbeatGrace)
+                                {
+                                    timeoutReason = $"stall detected: no mux progress for {(now - lastMuxProgressAt).TotalMinutes:F1}m (cap {activeStallCap.TotalMinutes:F1}m) and no ffmpeg heartbeat for {(now - lastFfmpegHeartbeatAt).TotalMinutes:F1}m (grace {ffmpegHeartbeatGrace.TotalMinutes:F1}m)";
+                                    break;
+                                }
                                 await Task.Delay(1000);
                             }
                             pollCts.Cancel();
-                            if (!pConcat.HasExited)
+                            try { await Task.WhenAny(pollTask, Task.Delay(2000)); } catch { }
+                            if (IsProcessRunningSafe(pConcat))
                             {
                                 try
                                 {
+                                    _log.LogWarning("Concat finalize timeout — reason: {Reason}", timeoutReason ?? "unknown");
                                     _log.LogWarning("Concat finalize timeout — killing ffmpeg and discarding partial MP4");
                                     pConcat.Kill(entireProcessTree: true);
                                 }
@@ -1020,7 +1085,9 @@ namespace Recast.WindowsRecorder.Services
                                 try { await Task.WhenAll(Task.WhenAny(stderrTask, Task.Delay(1000)), Task.WhenAny(stdoutTask, Task.Delay(1000))); } catch { }
                                 long sizeC = 0;
                                 try { var fiC = new FileInfo(outPath); if (fiC.Exists) sizeC = fiC.Length; } catch { }
-                                if (File.Exists(outPath) && sizeC > 300_000 && pConcat.ExitCode == 0)
+                                var exitCode = -1;
+                                try { exitCode = pConcat.ExitCode; } catch { }
+                                if (File.Exists(outPath) && sizeC > 300_000 && exitCode == 0)
                                 {
                                     _log.LogInformation("MP4 created (concat): {Path}", outPath);
                                     if (deleteHls && CurrentDir != null)
@@ -1036,7 +1103,7 @@ namespace Recast.WindowsRecorder.Services
                                 }
                                 else
                                 {
-                                    _log.LogWarning("Concat finalize failed or output too small. exit={Exit} size={Size} stderr={Err}", pConcat.ExitCode, sizeC, string.Join(" | ", stderrLines));
+                                    _log.LogWarning("Concat finalize failed or output too small. exit={Exit} size={Size} stderr={Err}", exitCode, sizeC, string.Join(" | ", stderrLines));
                                 }
                             }
                             try { ffLog?.Dispose(); } catch { }

@@ -223,6 +223,7 @@ namespace Recast.WindowsRecorder
                     debug = new
                     {
                         ffmpeg_log_level = cfg.FfmpegLogLevel,
+                        recorder_log_level = cfg.RecorderLogLevel,
                         dda_probe_enabled = cfg.DdaProbeEnabled,
                         dda_probe_interval_seconds = cfg.DdaProbeIntervalSeconds,
                         dda_probe_timeout_seconds = cfg.DdaProbeTimeoutSeconds,
@@ -311,6 +312,7 @@ namespace Recast.WindowsRecorder
                     if (root.TryGetProperty("debug", out var debug))
                     {
                         SetIfPresent(recorder, debug, "ffmpeg_log_level", "FfmpegLogLevel");
+                        SetIfPresent(recorder, debug, "recorder_log_level", "RecorderLogLevel");
                         SetIfPresent(recorder, debug, "dda_probe_enabled", "DdaProbeEnabled");
                         SetIfPresent(recorder, debug, "dda_probe_interval_seconds", "DdaProbeIntervalSeconds");
                         SetIfPresent(recorder, debug, "dda_probe_timeout_seconds", "DdaProbeTimeoutSeconds");
