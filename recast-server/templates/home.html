@@ -30,17 +30,17 @@
       </div>
 
       <!-- Live Streams -->
-      <div class="card p-6 mb-6" id="live-card" style="display:none;">
+      <div class="card p-6 mb-6" id="live-card">
         <h2 class="text-2xl font-bold mb-4 text-gray-800">Live Recordings</h2>
         <div id="live-streams-container">
-          
+          <p class="text-gray-500 text-center py-4">No live recordings right now.</p>
         </div>
       </div>
 
       <!-- Upcoming Recordings -->
-      {% if upcoming_jobs %}
       <div class="card p-6 mb-6">
         <h2 class="text-2xl font-bold mb-4 text-gray-800">Upcoming Recordings</h2>
+        {% if upcoming_jobs %}
         <div class="overflow-x-auto">
           <table class="w-full">
             <thead>
@@ -59,13 +59,15 @@
             </tbody>
           </table>
         </div>
+        {% else %}
+        <p class="text-gray-500 text-center py-4">No upcoming recordings scheduled.</p>
+        {% endif %}
       </div>
-      {% endif %}
 
       <!-- Recordings Library -->
-      {% if recordings %}
       <div class="card p-6">
         <h2 class="text-2xl font-bold mb-4 text-gray-800">Recordings Library</h2>
+        {% if recordings %}
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {% for recording in recordings %}
           <div class="border border-gray-200 rounded-lg p-4 hover:shadow-lg transition {% if not recording.recorder_online %}opacity-50{% endif %}">
@@ -98,8 +100,10 @@
           </div>
           {% endfor %}
         </div>
+        {% else %}
+        <p class="text-gray-500 text-center py-4">No recordings yet.</p>
+        {% endif %}
       </div>
-      {% endif %}
     </div>
   </div>
 
@@ -109,9 +113,7 @@
       const response = await fetch('/api/live_streams');
       const data = await response.json();
       const container = document.getElementById('live-streams-container');
-      const liveCard = document.getElementById('live-card');
       if (data.live_jobs && data.live_jobs.length > 0) {
-        if (liveCard) liveCard.style.display = '';
         container.innerHTML = data.live_jobs.map(job => {
           const ready = !!job.live_ready;
           const badge = ready ? '<span class="status-badge status-recording">LIVE</span>' : '<span class="status-badge status-assigned">STARTING</span>';
@@ -134,8 +136,7 @@
           </div>`;
         }).join('');
       } else {
-        container.innerHTML = '';
-        if (liveCard) liveCard.style.display = 'none';
+        container.innerHTML = '<p class="text-gray-500 text-center py-4">No live recordings right now.</p>';
       }
     } catch (e) {
       console.error('Error loading live streams', e);
