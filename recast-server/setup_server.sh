@@ -1,6 +1,6 @@
 #!/bin/bash
 # Recast Server Setup Script
-# Run on Kate (management server)
+# Run as root on the recast server
 
 set -e  # Exit on error
 
@@ -12,56 +12,42 @@ echo "Recast Server Setup"
 echo "=========================================="
 echo ""
 
-# Check if running as root
-if [ "$EUID" -eq 0 ]; then 
-    echo "Warning: Running as root"
-    echo "It's recommended to run as a regular user with sudo privileges"
-    echo ""
-    read -p "Create a regular user for running this script? (y/n): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Enter username to create: " NEW_USER
-        adduser --disabled-password --gecos "" $NEW_USER
-        usermod -aG sudo $NEW_USER
-        echo ""
-        echo "User $NEW_USER created with sudo privileges"
-        echo "Please run this script again as that user:"
-        echo "  su - $NEW_USER"
-        echo "  ./setup_server.sh"
-        exit 0
-    else
-        echo "Continuing as root (not recommended)..."
-        echo ""
-    fi
+if [ "$EUID" -ne 0 ]; then
+    echo "Error: This script must be run as root" >&2
+    exit 1
+fi
+
+echo "Step 1: Creating recast user..."
+if id -u recast >/dev/null 2>&1; then
+    echo "User already exists, updating to system account settings..."
+    usermod -L -d /opt/recast -s /usr/sbin/nologin recast
+else
+    useradd -r -d /opt/recast -m -s /usr/sbin/nologin recast
 fi
 
 echo ""
-echo "Step 1: Creating recast user..."
-sudo useradd -r -s /bin/bash -d /opt/recast -m recast 2>/dev/null || echo "User already exists"
-
-echo ""
 echo "Step 2: Installing system packages..."
-sudo apt update
-sudo apt install -y python3 python3-pip python3-venv
+apt update
+apt install -y python3 python3-pip python3-venv
 
 echo ""
 echo "Step 3: Creating directory structure..."
-sudo mkdir -p /opt/recast
-sudo chown recast:recast /opt/recast
-sudo chmod 755 /opt/recast
+mkdir -p /opt/recast
+chown recast:recast /opt/recast
+chmod 755 /opt/recast
 cd /opt/recast || { echo "Failed to enter /opt/recast"; exit 1; }
 
 echo ""
 echo "Step 4: Installing Python dependencies..."
-sudo cp "$SCRIPT_DIR/requirements.txt" /opt/recast/requirements.txt
-sudo chown recast:recast /opt/recast/requirements.txt
-sudo -u recast python3 -m venv venv
-sudo -u recast bash -c "source venv/bin/activate && pip install --upgrade pip && pip install -r /opt/recast/requirements.txt"
+cp "$SCRIPT_DIR/requirements.txt" /opt/recast/requirements.txt
+chown recast:recast /opt/recast/requirements.txt
+runuser -u recast -- python3 -m venv venv
+runuser -u recast -- bash -c "source venv/bin/activate && pip install --upgrade pip && pip install -r /opt/recast/requirements.txt"
 
 echo ""
 echo "Step 5: Creating recordings directory..."
-sudo mkdir -p /opt/recast/recordings
-sudo chown recast:recast /opt/recast/recordings
+mkdir -p /opt/recast/recordings
+chown recast:recast /opt/recast/recordings
 
 echo ""
 echo "Step 6: Creating configuration file..."
@@ -72,16 +58,16 @@ if [ -f "$CONFIG_FILE" ]; then
     echo "config.toml already exists, skipping..."
 else
     echo "Copying config.toml.example to config.toml..."
-    sudo -u recast cp "$EXAMPLE_FILE" "$CONFIG_FILE"
+    cp "$EXAMPLE_FILE" "$CONFIG_FILE"
 fi
 
 # Ensure correct ownership
-sudo chown recast:recast "$CONFIG_FILE"
+chown recast:recast "$CONFIG_FILE"
 
 echo ""
 echo "Step 7: Configuring firewall..."
 if command -v ufw >/dev/null 2>&1; then
-    sudo ufw allow 5000/tcp comment "Recast Server"
+    ufw allow 5000/tcp comment "Recast Server"
 else
     echo "ufw not found; skipping firewall rule for port 5000"
 fi
@@ -89,15 +75,15 @@ fi
 echo ""
 echo "Step 8: Installing systemd service..."
 
-sudo cp "$SCRIPT_DIR"/*.py /opt/recast/
-sudo cp -r "$SCRIPT_DIR/templates" /opt/recast/
-sudo cp "$SCRIPT_DIR/recast-server.service" /opt/recast/recast-server.service
+cp "$SCRIPT_DIR"/*.py /opt/recast/
+cp -r "$SCRIPT_DIR/templates" /opt/recast/
+cp "$SCRIPT_DIR/recast-server.service" /opt/recast/recast-server.service
 
-sudo chown -R recast:recast /opt/recast/
+chown -R recast:recast /opt/recast/
 
-sudo ln -sf /opt/recast/recast-server.service /etc/systemd/system/recast-server.service
-sudo systemctl daemon-reload
-sudo systemctl enable recast-server
+ln -sf /opt/recast/recast-server.service /etc/systemd/system/recast-server.service
+systemctl daemon-reload
+systemctl enable recast-server
 
 echo ""
 echo "=========================================="
@@ -107,14 +93,14 @@ echo ""
 echo "Next steps:"
 echo ""
 echo "1. Start the service:"
-echo "   sudo systemctl start recast-server"
+echo "   systemctl start recast-server"
 echo ""
 echo "2. Check status:"
-echo "   sudo systemctl status recast-server"
+echo "   systemctl status recast-server"
 echo ""
 echo "3. Access web interface:"
 echo "   http://$(hostname):5000"
 echo ""
 echo "4. View logs:"
-echo "   sudo journalctl -u recast-server -f"
+echo "   journalctl -u recast-server -f"
 echo ""
