@@ -72,7 +72,7 @@
                             <span class="status-badge status-{{ recorder.status.lower() }}">{{ recorder.status }}</span>
                         </div>
                         <p class="text-sm text-gray-600">Host: {{ recorder.hostname }}{% if recorder.ip_address %} (IP: {{ recorder.ip_address }}){% endif %}</p>
-                        <p class="text-sm text-gray-500">Last seen: {{ recorder.last_heartbeat }}</p>
+                        <p class="text-sm text-gray-500">Last seen: <span class="js-lt" data-utc="{{ recorder.last_heartbeat }}">{{ recorder.last_heartbeat }}</span></p>
                         {% if recorder.current_job_id %}
                         <p class="text-sm text-blue-600 mt-2">Recording Job #{{ recorder.current_job_id }}</p>
                         {% endif %}
@@ -125,8 +125,8 @@
                                 <span id="job-title-j-{{ job.id }}">{{ job.title or '' }}</span>
                             </td>
                             <td class="py-3 px-4 text-gray-600 truncate max-w-xs" title="{{ job.url }}">{{ job.url }}</td>
-                            <td class="py-3 px-4 text-gray-600">{{ job.start_time_formatted }}</td>
-                            <td class="py-3 px-4 text-gray-600">{{ job.end_time_formatted }}</td>
+                            <td class="py-3 px-4 text-gray-600"><span class="js-lt" data-utc="{{ job.start_time_iso }}">{{ job.start_time_formatted }}</span></td>
+                            <td class="py-3 px-4 text-gray-600"><span class="js-lt" data-utc="{{ job.end_time_iso }}">{{ job.end_time_formatted }}</span></td>
                             <td class="py-3 px-4">
                                 <span class="status-badge status-{{ job.status.lower() }}">{{ job.status }}</span>
                                 {% if job.status == 'PENDING' %}
@@ -156,8 +156,8 @@
                         </h3>
                     </div>
                     <div class="text-sm text-gray-500 mb-3">
-                        <p>Start: {{ recording.start_time_formatted }}</p>
-                        <p>End: {{ recording.end_time_formatted }}</p>
+                        <p>Start: <span class="js-lt" data-utc="{{ recording.start_time_iso }}">{{ recording.start_time_formatted }}</span></p>
+                        <p>End: <span class="js-lt" data-utc="{{ recording.end_time_iso }}">{{ recording.end_time_formatted }}</span></p>
                         <p>Size: {{ (recording.file_size_bytes / 1024 / 1024) | round(1) }} MB</p>
                         <p>Host: 
                             <span class="text-gray-700">{{ recording.recorder_host or 'unknown' }}</span>
@@ -219,6 +219,19 @@
 </div>
 
 <script>
+// Parse a UTC timestamp ("YYYY-MM-DD HH:MM:SS", ISO, or ISO with offset) and
+// format it in the viewer's local timezone.
+function fmtLocal(s) {
+    if (!s) return '';
+    let str = String(s).trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:/.test(str)) str = str.replace(' ', 'T');
+    if (!/([Zz]|[+-]\d{2}:?\d{2})$/.test(str)) str += 'Z';
+    const d = new Date(str);
+    if (isNaN(d)) return s;
+    return d.toLocaleString(undefined, { month: 'short', day: '2-digit', year: '2-digit', hour: 'numeric', minute: '2-digit' });
+}
+document.querySelectorAll('.js-lt[data-utc]').forEach(el => { if (el.dataset.utc) el.textContent = fmtLocal(el.dataset.utc); });
+
 async function loadLiveStreams() {
     try {
         const response = await fetch('/api/live_streams');
@@ -245,8 +258,8 @@ async function loadLiveStreams() {
                         <div>
                             <h3 class="font-semibold text-gray-800">${job.title || ('Job #' + job.id)}</h3>
                             <p class="text-sm text-gray-600">${job.url}</p>
-                            <p class="text-xs text-gray-500 mt-1">Start: ${job.live_start_time_formatted || job.start_time_formatted || ''}</p>
-                            <p class="text-xs text-gray-500">End: ${job.end_time_formatted || ''}</p>
+                            <p class="text-xs text-gray-500 mt-1">Start: ${fmtLocal(job.live_start_time || job.start_time)}</p>
+                            <p class="text-xs text-gray-500">End: ${fmtLocal(job.end_time)}</p>
                         </div>
                         ${badge}
                     </div>

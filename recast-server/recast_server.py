@@ -174,6 +174,12 @@ def format_time_fields(records, time_key):
         if dt_object.tzinfo is None:
             dt_object = dt_object.replace(tzinfo=timezone.utc)
 
+        # ISO 8601 UTC so browsers can convert to the viewer's local timezone
+        try:
+            record[f"{time_key}_iso"] = dt_object.astimezone(timezone.utc).isoformat()
+        except Exception:
+            pass
+
         try:
             local_dt = dt_object.astimezone()
             record[formatted_key] = local_dt.strftime(OUTPUT_FORMAT)
@@ -783,7 +789,7 @@ def get_job_status(job_id):
     
     job_dict = dict(job)
     
-    # Convert UTC timestamps to local time for display
+    # Normalize timestamps to ISO 8601 UTC; clients localize for display
     for time_field in ['start_time', 'end_time', 'created_at', 'started_at', 'completed_at']:
         time_string = job_dict.get(time_field)
         if time_string:
@@ -800,8 +806,8 @@ def get_job_status(job_id):
                 if dt_object:
                     if dt_object.tzinfo is None:
                         dt_object = dt_object.replace(tzinfo=timezone.utc)
-                    local_dt = dt_object.astimezone()
-                    job_dict[time_field] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    # Emit ISO 8601 UTC; clients localize for display
+                    job_dict[time_field] = dt_object.astimezone(timezone.utc).isoformat()
             except Exception:
                 pass
     

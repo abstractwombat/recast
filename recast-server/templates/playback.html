@@ -143,6 +143,18 @@ const STORAGE_KEY = `recast_position_${jobId}`;
 
 let pollInterval = null;
 
+// Parse a UTC timestamp ("YYYY-MM-DD HH:MM:SS", ISO, or ISO with offset) and
+// format it in the viewer's local timezone.
+function fmtLocal(s) {
+    if (!s) return '';
+    let str = String(s).trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:/.test(str)) str = str.replace(' ', 'T');
+    if (!/([Zz]|[+-]\d{2}:?\d{2})$/.test(str)) str += 'Z';
+    const d = new Date(str);
+    if (isNaN(d)) return s;
+    return d.toLocaleString(undefined, { month: 'short', day: '2-digit', year: '2-digit', hour: 'numeric', minute: '2-digit' });
+}
+
 // Format time
 function formatTime(seconds) {
     const h = Math.floor(seconds / 3600);
@@ -205,10 +217,10 @@ function showReadyState(job, recording) {
     document.getElementById('recording-title').textContent = displayTitle;
     document.getElementById('recording-url').textContent = job.url;
     document.getElementById('recording-times').textContent = 
-        `Recorded: ${job.start_time} to ${job.end_time}`;
+        `Recorded: ${fmtLocal(job.start_time)} to ${fmtLocal(job.end_time)}`;
     document.getElementById('file-size').textContent = formatFileSize(recording.file_size_bytes);
     document.getElementById('duration').textContent = recording.duration_seconds + ' seconds';
-    document.getElementById('created-at').textContent = recording.created_at;
+    document.getElementById('created-at').textContent = fmtLocal(recording.created_at);
     
     document.getElementById('download-link').href = `/recordings/${recording.filename}`;
 

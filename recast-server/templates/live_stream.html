@@ -157,9 +157,19 @@ async function checkStreamAvailability() {
 }
 
 // Show waiting overlay
+function fmtLocal(s) {
+    if (!s) return '';
+    let str = String(s).trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:/.test(str)) str = str.replace(' ', 'T');
+    if (!/([Zz]|[+-]\d{2}:?\d{2})$/.test(str)) str += 'Z';
+    const d = new Date(str);
+    if (isNaN(d)) return s;
+    return d.toLocaleString();
+}
+
 function showWaitingOverlay(scheduledStartTime) {
     document.getElementById('waiting-overlay').classList.remove('hidden');
-    document.getElementById('scheduled-time').textContent = new Date(scheduledStartTime).toLocaleString();
+    document.getElementById('scheduled-time').textContent = fmtLocal(scheduledStartTime);
     videoElement.style.display = 'none';
     statusOverlay.style.display = 'none';
 }
