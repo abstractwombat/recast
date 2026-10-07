@@ -90,7 +90,7 @@
                         required
                         class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     >
-                    <p class="text-sm text-gray-500 mt-1">When should the recording start?</p>
+                    <p class="text-sm text-gray-500 mt-1">When should the recording start? (your local time)</p>
                 </div>
 
                 <!-- End Time -->
@@ -105,7 +105,7 @@
                         required
                         class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     >
-                    <p class="text-sm text-gray-500 mt-1">When should the recording end?</p>
+                    <p class="text-sm text-gray-500 mt-1">When should the recording end? (your local time)</p>
                 </div>
 
                 <!-- Duration Display -->
@@ -236,6 +236,20 @@ function setDuration(minutes) {
     updateDuration();
 }
 
+// Convert a datetime-local value (browser-local, no offset) to an
+// offset-aware ISO string like "2026-10-06T19:21:00-06:00" so the
+// server doesn't have to guess which timezone the times are in.
+function toIsoWithOffset(value) {
+    const d = new Date(value);
+    const pad = n => String(n).padStart(2, '0');
+    const offMin = -d.getTimezoneOffset();
+    const sign = offMin >= 0 ? '+' : '-';
+    const abs = Math.abs(offMin);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+           `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+           `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
 // Form submission
 document.getElementById('schedule-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -243,8 +257,8 @@ document.getElementById('schedule-form').addEventListener('submit', async (e) =>
     const formData = {
         url: document.getElementById('url').value,
         title: document.getElementById('title').value,
-        start_time: document.getElementById('start_time').value,
-        end_time: document.getElementById('end_time').value,
+        start_time: toIsoWithOffset(document.getElementById('start_time').value),
+        end_time: toIsoWithOffset(document.getElementById('end_time').value),
         browser_controller: document.getElementById('browser_controller').value
     };
     

@@ -320,6 +320,7 @@ namespace Recast.WindowsRecorder.Services
             string url = "";
             string controller = "generic";
             string endTimeStr = string.Empty;
+            int durationSeconds = 0;
             try
             {
                 if (!job.TryGetProperty("id", out var idEl))
@@ -336,6 +337,7 @@ namespace Recast.WindowsRecorder.Services
                 }
                 controller = job.TryGetProperty("browser_controller", out var bc) ? (bc.GetString() ?? "generic") : "generic";
                 endTimeStr = job.TryGetProperty("end_time", out var etEl) ? (etEl.GetString() ?? string.Empty) : string.Empty;
+                durationSeconds = job.TryGetProperty("duration_seconds", out var dsEl) && dsEl.ValueKind == JsonValueKind.Number ? dsEl.GetInt32() : 0;
                 _log.LogInformation("Parsed job {JobId}: controller={Controller} url={Url}", jobId, controller, url);
             }
             catch (Exception parseEx)
@@ -498,6 +500,16 @@ namespace Recast.WindowsRecorder.Services
                 else
                 {
                     _log.LogInformation("[job {Job}] Parsed end_time='{EndTime}' -> endUtc={EndUtc:o} (nowUtc={NowUtc:o})", jobId, endTimeStr, endUtc, nowUtc);
+                }
+                if (endUtc <= nowUtc)
+                {
+                    // Stored end_time is already in the past — typically a timezone or
+                    // clock skew between the scheduler and this machine. Mirror the
+                    // Linux recorder and record for duration_seconds from now instead
+                    // of stopping immediately.
+                    var fallbackSeconds = durationSeconds > 0 ? durationSeconds : 300;
+                    _log.LogWarning("[job {Job}] endUtc={EndUtc:o} is in the past (nowUtc={NowUtc:o}); falling back to {Seconds}s duration", jobId, endUtc, nowUtc, fallbackSeconds);
+                    endUtc = nowUtc.AddSeconds(fallbackSeconds);
                 }
                 while (!ct.IsCancellationRequested)
                 {
