@@ -479,6 +479,35 @@ namespace Recast.WindowsRecorder
 
             app.MapGet("/api/live_clients", () => Results.Json(new { clients = Array.Empty<object>() }));
 
+            app.MapPost("/api/recordings/{filename}/delete", (string filename, IOptionsMonitor<RecorderOptions> options) =>
+            {
+                try
+                {
+                    var cfg = options.CurrentValue ?? new RecorderOptions();
+                    var outputRoot = !string.IsNullOrWhiteSpace(cfg.OutputDirectory)
+                        ? (Path.IsPathRooted(cfg.OutputDirectory!) ? cfg.OutputDirectory! : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, cfg.OutputDirectory!)))
+                        : Path.Combine(AppContext.BaseDirectory, "recordings");
+
+                    var basePath = Path.GetFullPath(outputRoot);
+                    var target = Path.GetFullPath(Path.Combine(basePath, filename));
+
+                    // Prevent path traversal — target must stay under the recordings directory
+                    if (!target.StartsWith(basePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                        return Results.Json(new { status = "error", message = "Invalid path" }, statusCode: 400);
+
+                    if (!File.Exists(target))
+                        return Results.Json(new { status = "error", message = "Not found" }, statusCode: 404);
+
+                    File.Delete(target);
+                    return Results.Json(new { status = "success" });
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Failed to delete recording {Filename}", filename);
+                    return Results.Json(new { status = "error", message = "Delete failed" }, statusCode: 500);
+                }
+            });
+
             app.MapGet("/live", (int job_id) =>
             {
                 var path = Path.Combine(AppContext.BaseDirectory, "hls", $"job_{job_id}", "stream.m3u8");

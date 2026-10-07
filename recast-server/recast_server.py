@@ -931,7 +931,10 @@ def delete_recording(recording_id: int):
     import requests
     try:
         resp = requests.post(f"http://{target_host}:5001/api/recordings/{filename}/delete", timeout=15)
-        if resp.status_code != 200:
+        if resp.status_code == 404:
+            # File already gone on the recorder — still remove the DB row
+            logging.info(f"Recording file {filename} not found on recorder; removing DB entry anyway")
+        elif resp.status_code != 200:
             try:
                 data = resp.json()
                 msg = data.get('message', 'Recorder deletion failed')
