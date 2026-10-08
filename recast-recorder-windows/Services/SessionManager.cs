@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using System.IO;
 using OpenQA.Selenium.Support.UI;
 using OpenQA.Selenium.Interactions;
+using System.Text.Json.Nodes;
 
 namespace Recast.WindowsRecorder.Services
 {
@@ -57,11 +58,16 @@ namespace Recast.WindowsRecorder.Services
                 try { options.AddAdditionalOption("useAutomationExtension", false); } catch { }
                 options.AddArgument("--disable-infobars");
                 options.AddArgument("--disable-session-crashed-bubble");
+                options.AddArgument("--hide-crash-restore-bubble");
                 options.AddArgument("--restore-last-session=false");
                 options.AddArgument("--homepage=about:blank");
                 // Persistent profile per controller
                 var profileRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "recast", ".recast-chrome", controller);
                 Directory.CreateDirectory(profileRoot);
+                // Clear the crashed-session flags left in the profile by an
+                // unclean shutdown (e.g. power loss) so Chrome doesn't show the
+                // "Restore pages?" bubble on launch.
+                MarkProfileClean(profileRoot);
                 options.AddArgument($"--user-data-dir={profileRoot}");
                 options.AddArgument("--profile-directory=Default");
 
@@ -285,6 +291,41 @@ namespace Recast.WindowsRecorder.Services
             foreach (var key in _sessions.Keys.ToArray())
                 _ = StopAsync(key);
             return Task.CompletedTask;
+        }
+
+        private static void MarkProfileClean(string profileRoot)
+        {
+            PatchProfileJson(Path.Combine(profileRoot, "Local State"), node =>
+            {
+                if (node["profile"] is not JsonObject profile)
+                {
+                    profile = new JsonObject();
+                    node["profile"] = profile;
+                }
+                profile["exited_cleanly"] = true;
+            });
+            PatchProfileJson(Path.Combine(profileRoot, "Default", "Preferences"), node =>
+            {
+                if (node["profile"] is not JsonObject profile)
+                {
+                    profile = new JsonObject();
+                    node["profile"] = profile;
+                }
+                profile["exit_type"] = "Normal";
+                profile["exited_cleanly"] = true;
+            });
+        }
+
+        private static void PatchProfileJson(string path, Action<JsonObject> patch)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                if (JsonNode.Parse(File.ReadAllText(path)) is not JsonObject node) return;
+                patch(node);
+                File.WriteAllText(path, node.ToJsonString());
+            }
+            catch { }
         }
 
         private static async Task PerformStallRecovery(IWebDriver driver, ILogger log, CancellationToken token)
