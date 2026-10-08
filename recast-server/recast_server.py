@@ -188,6 +188,62 @@ def format_time_fields(records, time_key):
 
     return records
 
+# Grace period (seconds) an in-flight job may go unclaimed by its recorder
+# before it is marked FAILED. Gives a restarted recorder one get_job cycle
+# to re-adopt the job instead of having it killed by the first heartbeat.
+INFLIGHT_JOB_GRACE_SECONDS = 90
+_job_mismatch_since = {}
+
+def _fail_unclaimed_jobs(cursor):
+    """Fail in-flight jobs whose recorder is heartbeating but not claiming them.
+
+    The first time a job is seen unclaimed it gets a grace window so a
+    restarted recorder can re-adopt it via get_job before it is failed.
+    A job is "claimed" when the recorder's heartbeat reports it as
+    current_job_id, regardless of the recorder's reported status
+    (STARTING/RECORDING/STOPPING/CONVERTING are all legitimate claims).
+    """
+    now = datetime.datetime.utcnow()
+    cursor.execute("""
+        SELECT j.id FROM jobs j
+        JOIN recorders r ON j.recorder_id = r.id
+        WHERE j.status IN ('RECORDING','STOPPING','CONVERTING')
+          AND (r.current_job_id IS NULL OR r.current_job_id != j.id)
+    """)
+    mismatched = {row['id'] for row in cursor.fetchall()}
+
+    # Forget jobs that are claimed again (or no longer in-flight)
+    for jid in list(_job_mismatch_since):
+        if jid not in mismatched:
+            _job_mismatch_since.pop(jid, None)
+
+    grace = datetime.timedelta(seconds=INFLIGHT_JOB_GRACE_SECONDS)
+    expired = []
+    for jid in mismatched:
+        t0 = _job_mismatch_since.get(jid)
+        if t0 is None:
+            _job_mismatch_since[jid] = now
+            logging.info(f"Job {jid} unclaimed by its recorder; {INFLIGHT_JOB_GRACE_SECONDS}s grace before failing")
+        elif now - t0 >= grace:
+            expired.append(jid)
+            _job_mismatch_since.pop(jid, None)
+
+    if expired:
+        now_iso = datetime.datetime.now(timezone.utc).isoformat()
+        placeholders = ','.join('?' for _ in expired)
+        cursor.execute(f"""
+            UPDATE jobs
+            SET status = 'FAILED',
+                error_message = CASE
+                    WHEN error_message IS NULL OR error_message = '' THEN '[reconciled] recorder heartbeat mismatch'
+                    ELSE error_message || ' [reconciled] recorder heartbeat mismatch'
+                END,
+                completed_at = ?
+            WHERE id IN ({placeholders})
+        """, (now_iso, *expired))
+        for jid in expired:
+            logging.info(f"Job {jid} marked FAILED: unclaimed by recorder for >{INFLIGHT_JOB_GRACE_SECONDS}s")
+
 def reconcile_jobs():
     conn = get_db()
     cursor = conn.cursor()
@@ -207,16 +263,13 @@ def reconcile_jobs():
             WHERE j.status IN ('ASSIGNED','STARTING','RECORDING','STOPPING','CONVERTING')
               AND (
                 r.id IS NULL
-                OR datetime(r.last_heartbeat) <= datetime('now','-2 minutes')
-                OR (
-                    j.status IN ('RECORDING','STOPPING','CONVERTING')
-                    AND (r.status != 'RECORDING' OR r.current_job_id IS NULL OR r.current_job_id != j.id)
-                )
+                OR datetime(r.last_heartbeat) <= datetime('now','-5 minutes')
               )
         )
         """,
         (now_iso,)
     )
+    _fail_unclaimed_jobs(cursor)
     conn.commit()
 
 # ============================================================================
@@ -307,25 +360,7 @@ def recorder_heartbeat():
                 """,
                 (recorder_id, datetime.datetime.now(timezone.utc).isoformat(), current_job_id)
             )
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET status = 'FAILED',
-                error_message = CASE
-                    WHEN error_message IS NULL OR error_message = '' THEN '[reconciled] recorder heartbeat mismatch'
-                    ELSE error_message || ' [reconciled] recorder heartbeat mismatch'
-                END,
-                completed_at = ?
-            WHERE recorder_id = ?
-              AND status IN ('RECORDING','STOPPING','CONVERTING')
-              AND (
-                    ? != 'RECORDING'
-                    OR ? IS NULL
-                    OR id != ?
-                  )
-            """,
-            (now_utc_str, recorder_id, status, current_job_id, current_job_id)
-        )
+        _fail_unclaimed_jobs(cursor)
         conn.commit()
     except Exception:
         conn.commit()
@@ -357,6 +392,21 @@ def get_job_for_recorder():
     
     conn = get_db()
     cursor = conn.cursor()
+
+    # Return any in-flight job already assigned to this recorder so it can be
+    # resumed after a recorder/service restart, instead of issuing new work.
+    cursor.execute("""
+        SELECT * FROM jobs
+        WHERE recorder_id = ?
+          AND status IN ('ASSIGNED','STARTING','RECORDING','STOPPING','CONVERTING')
+        ORDER BY datetime(start_time) ASC
+        LIMIT 1
+    """, (recorder_id,))
+    inflight = cursor.fetchone()
+    if inflight:
+        job_dict = dict(inflight)
+        logging.info(f"Returning in-flight job {job_dict['id']} (status={job_dict['status']}) to recorder {recorder_id} for resume")
+        return jsonify({'status': 'success', 'job': job_dict})
 
     # Find next job that should be started (start_time has passed, status is PENDING)
     cursor.execute("""

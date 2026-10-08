@@ -823,6 +823,33 @@ namespace Recast.WindowsRecorder.Services
 
         public string? CurrentPlaylistPath => CurrentDir == null ? null : Path.Combine(CurrentDir, "stream.m3u8");
 
+        // Re-attach to a job's existing HLS directory after a service/machine
+        // restart so preserved segments can be continued or finalized.
+        // Returns true if a usable stream (playlist with segments) exists.
+        public bool AttachToJob(int jobId)
+        {
+            CurrentJobId = jobId;
+            CurrentDir = Path.Combine(LiveRoot, $"job_{jobId}");
+            SegmentCount = 0;
+            var playlist = Path.Combine(CurrentDir, "stream.m3u8");
+            try
+            {
+                if (File.Exists(playlist))
+                    SegmentCount = CountSegments(File.ReadAllText(playlist));
+            }
+            catch { }
+            try
+            {
+                var first = Directory.GetFiles(CurrentDir, "seg*.ts").OrderBy(f => f).FirstOrDefault();
+                if (first != null)
+                    LiveStart = new DateTimeOffset(File.GetCreationTimeUtc(first), TimeSpan.Zero);
+            }
+            catch { }
+            var usable = Directory.Exists(CurrentDir) && SegmentCount > 0;
+            _log.LogInformation("AttachToJob({JobId}): dir={Dir} segments={Segs} usable={Usable}", jobId, CurrentDir, SegmentCount, usable);
+            return usable;
+        }
+
         public async Task<string?> FinalizeAsync(bool deleteHls = true)
         {
             if (_finalizing) return null;

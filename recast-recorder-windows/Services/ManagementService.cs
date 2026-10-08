@@ -262,47 +262,51 @@ namespace Recast.WindowsRecorder.Services
                     string? statusStr = s.ValueKind == JsonValueKind.String ? s.GetString() : null;
                     _log.LogDebug("get_job returned status={Status} body={Body}", statusStr, respBody);
                 }
-                // Fallback: resume an ASSIGNED job for this recorder after restarts
+                // Fallback: resume an in-flight job for this recorder after restarts
                 try
                 {
-                    var list = await client.GetAsync($"{_managerUrl}/api/jobs?status=ASSIGNED", ct);
-                    if (list.IsSuccessStatusCode)
+                    var resumableStatuses = new[] { "RECORDING", "STARTING", "STOPPING", "CONVERTING", "ASSIGNED", "FAILED" };
+                    foreach (var resumable in resumableStatuses)
                     {
+                        var list = await client.GetAsync($"{_managerUrl}/api/jobs?status={resumable}", ct);
+                        if (!list.IsSuccessStatusCode)
+                        {
+                            try { var lb = await list.Content.ReadAsStringAsync(ct); _log.LogDebug("resume fallback {Status} HTTP {Code} body={Body}", resumable, list.StatusCode, lb); } catch { }
+                            continue;
+                        }
                         var lbody = await list.Content.ReadAsStringAsync(ct);
                         using var jdoc = JsonDocument.Parse(lbody);
-                        if (jdoc.RootElement.TryGetProperty("jobs", out var jobs) && jobs.ValueKind == JsonValueKind.Array)
+                        if (!jdoc.RootElement.TryGetProperty("jobs", out var jobs) || jobs.ValueKind != JsonValueKind.Array)
                         {
-                            int total = 0; int matched = 0;
-                            foreach (var j in jobs.EnumerateArray())
+                            _log.LogDebug("resume fallback {Status}: response had no jobs array body={Body}", resumable, lbody);
+                            continue;
+                        }
+                        foreach (var j in jobs.EnumerateArray())
+                        {
+                            try
                             {
-                                try
+                                var rid = j.TryGetProperty("recorder_id", out var r) ? r.GetString() : null;
+                                if (!string.IsNullOrWhiteSpace(rid) || !string.Equals(rid, _recorderId, StringComparison.OrdinalIgnoreCase))
+                                    continue;
+                                // FAILED jobs are only resumable when the failure was a
+                                // reconcile artifact (recorder offline/unclaimed), not a
+                                // real job failure.
+                                if (resumable == "FAILED")
                                 {
-                                    total++;
-                                    var rid = j.TryGetProperty("recorder_id", out var r) ? r.GetString() : null;
-                                    if (!string.IsNullOrWhiteSpace(rid) && string.Equals(rid, _recorderId, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        _log.LogInformation("Resuming previously ASSIGNED job {JobId}", j.GetProperty("id").GetInt32());
-                                        matched++;
-                                        return j.Clone();
-                                    }
+                                    var err = j.TryGetProperty("error_message", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+                                    if (err == null || !err.Contains("[reconciled]", StringComparison.OrdinalIgnoreCase))
+                                        continue;
                                 }
-                                catch { }
+                                _log.LogInformation("Resuming in-flight job {JobId} (status={Status})", j.GetProperty("id").GetInt32(), resumable);
+                                return j.Clone();
                             }
-                            _log.LogDebug("assigned fallback scanned total={Total} matched={Matched}", total, matched);
+                            catch { }
                         }
-                        else
-                        {
-                            _log.LogDebug("assigned fallback: response had no jobs array body={Body}", lbody);
-                        }
-                    }
-                    else
-                    {
-                        try { var lb = await list.Content.ReadAsStringAsync(ct); _log.LogDebug("assigned fallback HTTP {Code} body={Body}", list.StatusCode, lb); } catch { }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _log.LogDebug(ex, "assigned-jobs fallback failed");
+                    _log.LogDebug(ex, "in-flight jobs fallback failed");
                 }
             }
             catch (Exception ex)
@@ -355,9 +359,45 @@ namespace Recast.WindowsRecorder.Services
             _log.LogInformation("State update -> {Status} jobId={JobId}", _state.Status, _state.CurrentJobId);
             try { await UpdateJobStatusAsync(client, jobId, "STARTING", null, ct); } catch { }
             string stopReason = "END";
+            string? finalError = null;
+
+            // Resume handling: a job returned with an in-flight server status was
+            // previously assigned to this recorder (e.g. the service or machine
+            // restarted mid-job). Attach to any preserved HLS output and decide
+            // whether to continue recording or go straight to finalization.
+            string? jobStatus = job.TryGetProperty("status", out var statusEl) && statusEl.ValueKind == JsonValueKind.String
+                ? statusEl.GetString() : null;
+            bool isResume = jobStatus is "ASSIGNED" or "STARTING" or "RECORDING" or "STOPPING" or "CONVERTING" or "FAILED";
+            bool hasExistingStream = false;
+            bool finalizeOnly = false;
+            if (isResume)
+            {
+                hasExistingStream = _rec.AttachToJob(jobId);
+                bool ended = !TryParseJobTimeUtc(endTimeStr, out var resumeEndUtc) || resumeEndUtc <= DateTimeOffset.UtcNow;
+                finalizeOnly = jobStatus is "STOPPING" or "CONVERTING" || ended;
+                _log.LogInformation("[job {Job}] Resuming job: status={Status} existingStream={HasStream} finalizeOnly={FinalizeOnly}", jobId, jobStatus, hasExistingStream, finalizeOnly);
+            }
 
             try
             {
+                if (finalizeOnly)
+                {
+                    // Job already ended (or was stopping/converting) before the
+                    // restart — skip re-recording; finally block finalizes and
+                    // uploads whatever footage was preserved.
+                    if (!hasExistingStream)
+                    {
+                        stopReason = "FAILED";
+                        finalError = "recorder restarted; no recoverable HLS footage found";
+                        _log.LogWarning("[job {Job}] Resume: no preserved HLS footage found for job", jobId);
+                    }
+                    else
+                    {
+                        _log.LogInformation("[job {Job}] Resume: skipping re-record, finalizing preserved footage", jobId);
+                    }
+                    return;
+                }
+
                 string? startStr = job.TryGetProperty("start_time", out var stEl) ? stEl.GetString() : null;
                 string? startedAt = job.TryGetProperty("started_at", out var staEl) ? staEl.GetString() : null;
                 _log.LogInformation("[job {Job}] Starting: controller={Controller} url={Url}", jobId, controller, url);
@@ -401,7 +441,7 @@ namespace Recast.WindowsRecorder.Services
                     bool recOk = false;
                     for (var attempt = 1; attempt <= startAttempts; attempt++)
                     {
-                        recOk = await _rec.StartAsync(jobId, 1920, 1080, 30);
+                        recOk = await _rec.StartAsync(jobId, 1920, 1080, 30, continueStream: hasExistingStream);
                         _log.LogInformation("[job {Job}] Recording start attempt {Attempt}/{Max}: ok={Ok}", jobId, attempt, startAttempts, recOk);
                         if (recOk) break;
 
@@ -625,8 +665,8 @@ namespace Recast.WindowsRecorder.Services
                     _log.LogWarning(ex, "[job {Job}] upload_recording failed", jobId);
                 }
                 // Final status update
-                var finalStatus = stopReason == "CANCELLED" ? "CANCELLED" : "COMPLETED";
-                try { await UpdateJobStatusAsync(client, jobId, finalStatus, null, outerCt); } catch (Exception ex) { _log.LogWarning(ex, "[job {Job}] Final status update failed", jobId); }
+                var finalStatus = stopReason == "CANCELLED" ? "CANCELLED" : stopReason == "FAILED" ? "FAILED" : "COMPLETED";
+                try { await UpdateJobStatusAsync(client, jobId, finalStatus, finalError, outerCt); } catch (Exception ex) { _log.LogWarning(ex, "[job {Job}] Final status update failed", jobId); }
             }
         }
 

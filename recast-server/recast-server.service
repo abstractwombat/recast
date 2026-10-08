@@ -1,6 +1,9 @@
 [Unit]
 Description=Recast Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
+# Never stop retrying restarts, regardless of crash frequency
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
