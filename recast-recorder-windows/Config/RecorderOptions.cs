@@ -17,6 +17,17 @@ namespace Recast.WindowsRecorder.Config
         public int? AudioBitrateK { get; set; }
         public int? AudioSampleRate { get; set; }
         public int? AudioChannels { get; set; }
+        // Static audio input delay (seconds) applied via -itsoffset to compensate for
+        // audio capture starting earlier than video capture. Used as the initial guess;
+        // replaced by a measured value when live A/V sync calibration corrects it.
+        public double? AudioInputOffsetSeconds { get; set; }
+
+        // A/V sync detection and correction
+        public bool? AvSyncDetectionEnabled { get; set; }
+        public bool? AvSyncLiveCorrectionEnabled { get; set; }
+        public bool? AvSyncFinalizeCorrectionEnabled { get; set; }
+        public double? AvSyncThresholdSeconds { get; set; }
+        public double? AvSyncMaxCorrectionSeconds { get; set; }
 
         // Recording/capture settings
         public int? Width { get; set; }

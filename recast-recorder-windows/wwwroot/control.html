@@ -230,6 +230,44 @@
           </div>
         </div>
 
+        <!-- A/V Sync Section -->
+        <div class="settings-section">
+          <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">A/V Sync</h3>
+          <div class="field">
+            <label for="audio_input_offset_seconds">Audio Input Offset (sec)</label>
+            <input type="number" id="audio_input_offset_seconds" min="-5" max="5" step="0.01" />
+          </div>
+          <div class="field">
+            <label for="av_sync_detection_enabled">Sync Detection</label>
+            <select id="av_sync_detection_enabled">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="av_sync_live_correction_enabled">Live Correction (restart)</label>
+            <select id="av_sync_live_correction_enabled">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="av_sync_finalize_correction_enabled">Finalize Correction</label>
+            <select id="av_sync_finalize_correction_enabled">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="av_sync_threshold_seconds">Sync Threshold (sec)</label>
+            <input type="number" id="av_sync_threshold_seconds" min="0.01" max="2" step="0.01" />
+          </div>
+          <div class="field">
+            <label for="av_sync_max_correction_seconds">Max Correction (sec)</label>
+            <input type="number" id="av_sync_max_correction_seconds" min="0.1" max="10" step="0.1" />
+          </div>
+        </div>
+
         <div class="settings-section">
           <h3 style="font-size: 14px; margin: 0 0 12px; color: #374151;">Paths</h3>
           <div class="field">
@@ -630,6 +668,7 @@
         const debug = data.debug || {};
         const finalize = data.finalize || {};
         const choppy_stream = data.choppy_stream || {};
+        const av_sync = data.av_sync || {};
 
         document.getElementById('capture_method').value = recording.capture_method ?? 'gdigrab';
         document.getElementById('screen_width').value = recording.screen_width ?? 1920;
@@ -675,6 +714,13 @@
         document.getElementById('choppy_stream_threshold_per_second').value = choppy_stream.threshold_per_second ?? 30;
         document.getElementById('choppy_stream_correction_action').value = choppy_stream.correction_action ?? 'restart_ffmpeg';
         document.getElementById('choppy_stream_grace_period_seconds').value = choppy_stream.grace_period_seconds ?? 5;
+
+        document.getElementById('audio_input_offset_seconds').value = av_sync.audio_input_offset_seconds ?? 0.1;
+        document.getElementById('av_sync_detection_enabled').value = String(av_sync.detection_enabled ?? false);
+        document.getElementById('av_sync_live_correction_enabled').value = String(av_sync.live_correction_enabled ?? false);
+        document.getElementById('av_sync_finalize_correction_enabled').value = String(av_sync.finalize_correction_enabled ?? false);
+        document.getElementById('av_sync_threshold_seconds').value = av_sync.threshold_seconds ?? 0.08;
+        document.getElementById('av_sync_max_correction_seconds').value = av_sync.max_correction_seconds ?? 2.0;
 
         document.getElementById('finalize_hard_cap_minutes').value = finalize.hard_cap_minutes ?? '';
         document.getElementById('finalize_stall_cap_minutes').value = finalize.stall_cap_minutes ?? '';
@@ -749,6 +795,14 @@
           threshold_per_second: parseInt(document.getElementById('choppy_stream_threshold_per_second').value, 10),
           correction_action: document.getElementById('choppy_stream_correction_action').value,
           grace_period_seconds: parseInt(document.getElementById('choppy_stream_grace_period_seconds').value, 5),
+        },
+        av_sync: {
+          audio_input_offset_seconds: parseFloat(document.getElementById('audio_input_offset_seconds').value),
+          detection_enabled: (document.getElementById('av_sync_detection_enabled').value === 'true'),
+          live_correction_enabled: (document.getElementById('av_sync_live_correction_enabled').value === 'true'),
+          finalize_correction_enabled: (document.getElementById('av_sync_finalize_correction_enabled').value === 'true'),
+          threshold_seconds: parseFloat(document.getElementById('av_sync_threshold_seconds').value),
+          max_correction_seconds: parseFloat(document.getElementById('av_sync_max_correction_seconds').value),
         }
       };
       

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Microsoft.Extensions.Logging;
@@ -35,6 +36,12 @@ namespace Recast.WindowsRecorder.Services
         private volatile bool _choppyStreamCorrectionInProgress;
         private CancellationTokenSource? _choppyCts;
         private Func<int, string, Task>? _jobFailureCallback;
+
+        private CancellationTokenSource? _avSyncCts;
+        private volatile bool _avSyncCorrectionInProgress;
+        private int? _avSyncCalibratedForJobId;
+        private double? _calibratedAudioOffsetSeconds;
+        public double? LastMeasuredAvSkewSeconds { get; private set; }
 
         [DllImport("user32.dll")]
         private static extern bool GetInputState();
@@ -173,6 +180,9 @@ namespace Recast.WindowsRecorder.Services
             {
                 try { File.Delete(playlist); } catch { }
                 SegmentCount = 0;
+                _avSyncCalibratedForJobId = null;
+                _calibratedAudioOffsetSeconds = null;
+                LastMeasuredAvSkewSeconds = null;
             }
             else
             {
@@ -330,9 +340,14 @@ namespace Recast.WindowsRecorder.Services
             var audioDev = _options?.CurrentValue?.AudioDevice?.Trim();
 
             // Audio input args: use wallclock timestamps for dshow to sync with video capture time
-            // Audio input: delay audio by ~100ms to compensate for audio arriving ahead of video frames
+            // Audio input: delay audio to compensate for audio arriving ahead of video frames.
+            // A per-job measured offset (from the A/V sync monitor) takes precedence over the configured guess.
+            var audioInputOffset = _calibratedAudioOffsetSeconds ?? cfg?.AudioInputOffsetSeconds ?? 0.1;
+            if (_calibratedAudioOffsetSeconds.HasValue)
+                _log.LogInformation("Using calibrated audio input offset {Offset}s (config default {Default}s)",
+                    audioInputOffset, cfg?.AudioInputOffsetSeconds ?? 0.1);
             var audioTqsArg = $"-thread_queue_size {audioTqs}";
-            var dshowAudioArgs = $"-itsoffset 0.1 {audioTqsArg} -rtbufsize 256M -f dshow -audio_buffer_size 50 -use_wallclock_as_timestamps 1";
+            var dshowAudioArgs = $"-itsoffset {audioInputOffset.ToString("0.####", CultureInfo.InvariantCulture)} {audioTqsArg} -rtbufsize 256M -f dshow -audio_buffer_size 50 -use_wallclock_as_timestamps 1";
 
             string tail;
             if (!string.IsNullOrWhiteSpace(audioDev) && (string.IsNullOrEmpty(audioApi) || audioApi == "dshow"))
@@ -355,6 +370,7 @@ namespace Recast.WindowsRecorder.Services
 
             var args = commonArgs + tail;
             var fullCommand = $"{ffmpeg} {args}";
+            var hasAudio = tail.Contains("audio=");
 
             // Pre-flight system diagnostics
             _log.LogInformation("========== Pre-Flight System Diagnostics ==========");
@@ -695,6 +711,7 @@ namespace Recast.WindowsRecorder.Services
                             {
                                 if (LiveStart == null) LiveStart = DateTimeOffset.UtcNow;
                                 _log.LogInformation("HLS ready: segments={Segs} playlist={Playlist}", segs, playlist);
+                                StartAvSyncMonitor(jobId, cfg, ffmpeg, audioInputOffset, hasAudio);
                                 return true;
                             }
                         }
@@ -785,6 +802,7 @@ namespace Recast.WindowsRecorder.Services
             {
                 _log.LogInformation("[Stop] StopAsync(choppy-correction): preserving choppy correction token for restart");
             }
+            try { _avSyncCts?.Cancel(); } catch { }
 
             var p = _proc;
             if (p == null) return true;
@@ -878,6 +896,11 @@ namespace Recast.WindowsRecorder.Services
                     var segs = Directory.EnumerateFiles(workDir, "seg*.ts").OrderBy(f => f).ToList();
                     if (segs.Count > 0)
                     {
+                        if (cfg?.AvSyncFinalizeCorrectionEnabled == true)
+                        {
+                            try { segs = await CorrectSegmentsAvSyncAsync(workDir, segs, cfg, ffmpeg); }
+                            catch (Exception ex) { _log.LogWarning(ex, "[AvSync] Finalize-time A/V sync correction failed; using original segments"); }
+                        }
                         var listPath = Path.Combine(workDir, "files.txt");
                         try { await File.WriteAllLinesAsync(listPath, segs.Select(s => $"file '{s.Replace("'", "'\\''")}'")); } catch { }
                         var finalizeLogLevel = cfg?.FfmpegLogLevel ?? "error";
@@ -1264,6 +1287,11 @@ namespace Recast.WindowsRecorder.Services
             _log.LogInformation("Audio: bitrate={Bitrate}k sample_rate={Rate} channels={Ch}",
                 cfg?.AudioBitrateK ?? 128, cfg?.AudioSampleRate ?? 48000, cfg?.AudioChannels ?? 2);
             _log.LogInformation("Audio device: api={Api} device={Device}", cfg?.AudioApi ?? "auto", cfg?.AudioDevice ?? "auto");
+            _log.LogInformation("Audio input offset: {Offset}s", cfg?.AudioInputOffsetSeconds ?? 0.1);
+            _log.LogInformation("A/V sync: detection={Det} live_correction={Live} finalize_correction={Fin} threshold={Thr}s max={Max}s",
+                cfg?.AvSyncDetectionEnabled ?? false, cfg?.AvSyncLiveCorrectionEnabled ?? false,
+                cfg?.AvSyncFinalizeCorrectionEnabled ?? false, cfg?.AvSyncThresholdSeconds ?? 0.08,
+                cfg?.AvSyncMaxCorrectionSeconds ?? 2.0);
 
             // Thread queue sizes
             _log.LogInformation("Thread queues: video={VideoTqs} audio={AudioTqs}",
@@ -1503,6 +1531,270 @@ namespace Recast.WindowsRecorder.Services
                 _log.LogError(ex, "[ChoppyStreamCorrection] Exception during choppy stream correction for job {JobId}", jobId);
                 _choppyStreamCorrectionInProgress = false;
             }
+        }
+
+        // ================= A/V sync detection & correction =================
+
+        private void StartAvSyncMonitor(int jobId, RecorderOptions? cfg, string ffmpeg, double audioInputOffset, bool hasAudio)
+        {
+            if (cfg?.AvSyncDetectionEnabled != true || !hasAudio || string.IsNullOrWhiteSpace(CurrentDir))
+                return;
+            try { _avSyncCts?.Cancel(); } catch { }
+            _avSyncCts = new CancellationTokenSource();
+            var dir = CurrentDir!;
+            var cts = _avSyncCts;
+            _log.LogInformation("[AvSync] Detection enabled for job {JobId}: threshold={Thr}s live_correction={Live} finalize_correction={Fin}",
+                jobId, cfg?.AvSyncThresholdSeconds ?? 0.08, cfg?.AvSyncLiveCorrectionEnabled ?? false, cfg?.AvSyncFinalizeCorrectionEnabled ?? false);
+            _ = Task.Run(() => MonitorAvSyncAsync(jobId, dir, cfg, ffmpeg, audioInputOffset, cts.Token));
+        }
+
+        private async Task MonitorAvSyncAsync(int jobId, string dir, RecorderOptions? cfg, string ffmpeg, double audioInputOffset, CancellationToken ct)
+        {
+            var threshold = Math.Max(0.01, cfg?.AvSyncThresholdSeconds ?? 0.08);
+            var maxCorr = Math.Max(threshold, cfg?.AvSyncMaxCorrectionSeconds ?? 2.0);
+            var liveCorrection = cfg?.AvSyncLiveCorrectionEnabled == true;
+            var monitor = new AvSyncMonitor(_log, ffmpeg);
+            var probed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var measurements = new List<double>();
+            double? referenceSkew = null;
+            var outOfRefStreak = 0;
+            var driftWarned = false;
+
+            try
+            {
+                // On a restarted stream many segments from the previous process already exist;
+                // skip all but the last two so the monitor mostly measures fresh output.
+                var preExisting = Directory.Exists(dir)
+                    ? Directory.EnumerateFiles(dir, "seg*.ts").OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList()
+                    : new List<string>();
+                foreach (var f in preExisting.Take(Math.Max(0, preExisting.Count - 2)))
+                    probed.Add(f);
+            }
+            catch { }
+
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    if (Directory.Exists(dir))
+                    {
+                        var segs = Directory.EnumerateFiles(dir, "seg*.ts")
+                            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        // Skip the newest segment — it may still be open for writing by ffmpeg
+                        foreach (var seg in segs.Take(Math.Max(0, segs.Count - 1)))
+                        {
+                            if (ct.IsCancellationRequested) break;
+                            if (!probed.Add(seg)) continue;
+
+                            var m = await monitor.MeasureAsync(seg, ct);
+                            var skew = m?.SkewSeconds;
+                            if (!skew.HasValue) continue;
+
+                            measurements.Add(skew.Value);
+                            LastMeasuredAvSkewSeconds = skew.Value;
+                            _log.LogInformation("[AvSync] {Seg}: audio lead {Ms:F0}ms (measurement #{N})",
+                                Path.GetFileName(seg), skew.Value * 1000, measurements.Count);
+
+                            // Baseline from the first few measurements lets us flag mid-stream
+                            // skew changes (e.g. a restart producing a different offset).
+                            if (measurements.Count == 5 && referenceSkew == null)
+                                referenceSkew = Median(measurements);
+                            if (referenceSkew.HasValue && !driftWarned)
+                            {
+                                if (Math.Abs(skew.Value - referenceSkew.Value) > threshold)
+                                {
+                                    if (++outOfRefStreak >= 3)
+                                    {
+                                        driftWarned = true;
+                                        _log.LogWarning("[AvSync] A/V skew changed mid-stream: baseline {Base:F0}ms now {Now:F0}ms — remaining skew will be corrected at finalize",
+                                            referenceSkew.Value * 1000, skew.Value * 1000);
+                                    }
+                                }
+                                else outOfRefStreak = 0;
+                            }
+
+                            // One-time startup calibration: once a couple of measurements exist,
+                            // restart ffmpeg with a measured -itsoffset if skew exceeds threshold.
+                            if (liveCorrection && _avSyncCalibratedForJobId != jobId && measurements.Count >= 2
+                                && !_avSyncCorrectionInProgress && !_choppyStreamCorrectionInProgress)
+                            {
+                                var median = Median(measurements);
+                                if (Math.Abs(median) > threshold)
+                                {
+                                    _avSyncCalibratedForJobId = jobId;
+                                    var newOffset = Math.Clamp(audioInputOffset + median, -maxCorr, maxCorr);
+                                    _log.LogWarning("[AvSync] Measured A/V skew {Ms:F0}ms exceeds threshold {Thr:F0}ms; restarting ffmpeg with audio offset {Old:F3}s -> {New:F3}s",
+                                        median * 1000, threshold * 1000, audioInputOffset, newOffset);
+                                    _calibratedAudioOffsetSeconds = newOffset;
+                                    _avSyncCorrectionInProgress = true;
+                                    var cts = _choppyCts;
+                                    _ = Task.Run(async () => await HandleAvSyncRestartAsync(jobId, cfg, cts?.Token ?? CancellationToken.None));
+                                    return;
+                                }
+                                if (measurements.Count >= 5)
+                                {
+                                    _avSyncCalibratedForJobId = jobId;
+                                    _log.LogInformation("[AvSync] A/V skew within tolerance ({Ms:F0}ms <= {Thr:F0}ms); no restart needed",
+                                        median * 1000, threshold * 1000);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) { _log.LogDebug(ex, "[AvSync] Monitor iteration failed"); }
+
+                try { await Task.Delay(2000, ct); } catch { break; }
+            }
+        }
+
+        private async Task HandleAvSyncRestartAsync(int jobId, RecorderOptions? cfg, CancellationToken ct)
+        {
+            try
+            {
+                await StopAsync(cancelChoppyCorrection: false);
+                await Task.Delay(2000);
+                if (ct.IsCancellationRequested)
+                {
+                    _log.LogInformation("[AvSync] Restart cancelled for job {JobId} (job already ended)", jobId);
+                    return;
+                }
+                var width = cfg?.Width ?? 1920;
+                var height = cfg?.Height ?? 1080;
+                var framerate = cfg?.Framerate ?? 30;
+                var success = await StartAsync(jobId, width, height, framerate, continueStream: true);
+                _log.LogInformation("[AvSync] FFmpeg restart for A/V sync correction {Result} for job {JobId}",
+                    success ? "succeeded" : "FAILED", jobId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "[AvSync] Exception during A/V sync restart for job {JobId}", jobId);
+            }
+            finally
+            {
+                _avSyncCorrectionInProgress = false;
+            }
+        }
+
+        // Probes every segment for A/V skew and remuxes out-of-tolerance segments with a
+        // stream-copied offset, returning the list of files to concatenate. Handles both
+        // uniform skew and skew that changes across ffmpeg restarts mid-recording.
+        private async Task<List<string>> CorrectSegmentsAvSyncAsync(string workDir, List<string> segs, RecorderOptions? cfg, string ffmpeg)
+        {
+            var threshold = Math.Max(0.01, cfg?.AvSyncThresholdSeconds ?? 0.08);
+            var maxCorr = Math.Max(threshold, cfg?.AvSyncMaxCorrectionSeconds ?? 2.0);
+            var monitor = new AvSyncMonitor(_log, ffmpeg);
+
+            var skews = new double?[segs.Count];
+            var probed = 0;
+            await Parallel.ForEachAsync(Enumerable.Range(0, segs.Count), new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (i, _) =>
+            {
+                var m = await monitor.MeasureAsync(segs[i], CancellationToken.None);
+                if (m?.SkewSeconds != null) skews[i] = m.SkewSeconds;
+                var n = Interlocked.Increment(ref probed);
+                if (n % 200 == 0) _log.LogInformation("[AvSync] Finalize probe progress: {N}/{Total}", n, segs.Count);
+            });
+
+            var measured = skews.Where(s => s.HasValue).Select(s => s!.Value).OrderBy(x => x).ToList();
+            if (measured.Count == 0)
+            {
+                _log.LogInformation("[AvSync] Finalize: no skew measurements (no audio streams?); skipping correction");
+                return segs;
+            }
+            var median = measured[measured.Count / 2];
+            var maxAbs = measured.Max(Math.Abs);
+            var outOfTol = measured.Count(s => Math.Abs(s) > threshold);
+            _log.LogInformation("[AvSync] Finalize: probed {Valid}/{Total} segments — median skew {Med:F0}ms, max |skew| {Max:F0}ms, {Out} beyond {Thr:F0}ms threshold",
+                measured.Count, segs.Count, median * 1000, maxAbs * 1000, outOfTol, threshold * 1000);
+
+            var result = new List<string>(segs.Count);
+            string? fixDir = null;
+            var fixedCount = 0;
+            for (var i = 0; i < segs.Count; i++)
+            {
+                var s = skews[i];
+                if (!s.HasValue || Math.Abs(s.Value) <= threshold || Math.Abs(s.Value) > maxCorr)
+                {
+                    result.Add(segs[i]);
+                    continue;
+                }
+                fixDir ??= Path.Combine(workDir, "avsync_fix");
+                Directory.CreateDirectory(fixDir);
+                var fixedPath = Path.Combine(fixDir, Path.GetFileName(segs[i]));
+                if (await RemuxSegmentWithAvOffsetAsync(ffmpeg, segs[i], fixedPath, s.Value))
+                {
+                    result.Add(fixedPath);
+                    fixedCount++;
+                }
+                else
+                {
+                    result.Add(segs[i]);
+                }
+            }
+
+            if (fixedCount > 0)
+                _log.LogInformation("[AvSync] Finalize: corrected {Fixed}/{Total} segments for A/V sync", fixedCount, segs.Count);
+            else
+                _log.LogInformation("[AvSync] Finalize: all measured segments within sync tolerance, no correction needed");
+            return result;
+        }
+
+        // offsetSeconds > 0: audio leads — shift the audio stream later by delaying the second input.
+        // offsetSeconds < 0: audio lags — shift the video stream later by delaying the first input.
+        private async Task<bool> RemuxSegmentWithAvOffsetAsync(string ffmpeg, string src, string dst, double offsetSeconds)
+        {
+            var off = Math.Abs(offsetSeconds).ToString("0.####", CultureInfo.InvariantCulture);
+            var args = offsetSeconds >= 0
+                ? $"-y -nostdin -loglevel error -i \"{src}\" -itsoffset {off} -i \"{src}\" -map 0:v:0 -map 1:a:0 -c copy \"{dst}\""
+                : $"-y -nostdin -loglevel error -itsoffset {off} -i \"{src}\" -i \"{src}\" -map 0:v:0 -map 1:a:0 -c copy \"{dst}\"";
+            Process? p = null;
+            try
+            {
+                p = Process.Start(new ProcessStartInfo
+                {
+                    FileName = ffmpeg,
+                    Arguments = args,
+                    UseShellExecute = false,
+                    RedirectStandardError = true,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(src) ?? "",
+                });
+                if (p == null) return false;
+                var stderrTask = p.StandardError.ReadToEndAsync();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                try
+                {
+                    await p.WaitForExitAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { p.Kill(true); } catch { }
+                    _log.LogWarning("[AvSync] Segment remux timed out for {Src}", src);
+                    return false;
+                }
+                var ok = p.ExitCode == 0 && File.Exists(dst) && new FileInfo(dst).Length > 0;
+                if (!ok)
+                    _log.LogWarning("[AvSync] Segment remux failed for {Src}: exit={Exit} stderr={Err}", src, p.ExitCode, (await stderrTask).Trim());
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                try { if (p != null && !p.HasExited) p.Kill(true); } catch { }
+                _log.LogWarning(ex, "[AvSync] Segment remux failed for {Src}", src);
+                return false;
+            }
+            finally
+            {
+                try { p?.Dispose(); } catch { }
+            }
+        }
+
+        private static double Median(List<double> values)
+        {
+            var sorted = values.OrderBy(v => v).ToList();
+            return sorted[sorted.Count / 2];
         }
 
     }

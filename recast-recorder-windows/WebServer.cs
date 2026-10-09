@@ -241,6 +241,15 @@ namespace Recast.WindowsRecorder
                         threshold_per_second = cfg.ChoppyStreamThresholdPerSecond ?? 30,
                         correction_action = cfg.ChoppyStreamCorrectionAction ?? "restart_ffmpeg",
                         grace_period_seconds = cfg.ChoppyStreamGracePeriodSeconds ?? 5,
+                    },
+                    av_sync = new
+                    {
+                        detection_enabled = cfg.AvSyncDetectionEnabled ?? false,
+                        live_correction_enabled = cfg.AvSyncLiveCorrectionEnabled ?? false,
+                        finalize_correction_enabled = cfg.AvSyncFinalizeCorrectionEnabled ?? false,
+                        threshold_seconds = cfg.AvSyncThresholdSeconds ?? 0.08,
+                        max_correction_seconds = cfg.AvSyncMaxCorrectionSeconds ?? 2.0,
+                        audio_input_offset_seconds = cfg.AudioInputOffsetSeconds ?? 0.1,
                     }
                 });
             });
@@ -330,6 +339,15 @@ namespace Recast.WindowsRecorder
                         SetIfPresent(recorder, choppyStream, "threshold_per_second", "ChoppyStreamThresholdPerSecond");
                         SetIfPresent(recorder, choppyStream, "correction_action", "ChoppyStreamCorrectionAction");
                         SetIfPresent(recorder, choppyStream, "grace_period_seconds", "ChoppyStreamGracePeriodSeconds");
+                    }
+                    if (root.TryGetProperty("av_sync", out var avSync))
+                    {
+                        SetIfPresent(recorder, avSync, "detection_enabled", "AvSyncDetectionEnabled");
+                        SetIfPresent(recorder, avSync, "live_correction_enabled", "AvSyncLiveCorrectionEnabled");
+                        SetIfPresent(recorder, avSync, "finalize_correction_enabled", "AvSyncFinalizeCorrectionEnabled");
+                        SetIfPresent(recorder, avSync, "threshold_seconds", "AvSyncThresholdSeconds");
+                        SetIfPresent(recorder, avSync, "max_correction_seconds", "AvSyncMaxCorrectionSeconds");
+                        SetIfPresent(recorder, avSync, "audio_input_offset_seconds", "AudioInputOffsetSeconds");
                     }
 
                     var tmp = settingsPath + ".tmp";
