@@ -286,7 +286,7 @@ namespace Recast.WindowsRecorder.Services
                             try
                             {
                                 var rid = j.TryGetProperty("recorder_id", out var r) ? r.GetString() : null;
-                                if (!string.IsNullOrWhiteSpace(rid) || !string.Equals(rid, _recorderId, StringComparison.OrdinalIgnoreCase))
+                                if (string.IsNullOrWhiteSpace(rid) || !string.Equals(rid, _recorderId, StringComparison.OrdinalIgnoreCase))
                                     continue;
                                 // FAILED jobs are only resumable when the failure was a
                                 // reconcile artifact (recorder offline/unclaimed), not a
@@ -630,11 +630,6 @@ namespace Recast.WindowsRecorder.Services
                     _isConverting = false;
                     _isStopping = false;
                 }
-                // Clear job state so heartbeats stop reporting CONVERTING even if server update fails
-                _currentJobId = null;
-                _state.CurrentJobId = null;
-                _state.Status = "IDLE";
-                _log.LogInformation("State update -> {Status} jobId={JobId}", _state.Status, _state.CurrentJobId);
                 // Upload recording metadata if we have an MP4
                 try
                 {
@@ -664,9 +659,19 @@ namespace Recast.WindowsRecorder.Services
                 {
                     _log.LogWarning(ex, "[job {Job}] upload_recording failed", jobId);
                 }
-                // Final status update
-                var finalStatus = stopReason == "CANCELLED" ? "CANCELLED" : stopReason == "FAILED" ? "FAILED" : "COMPLETED";
-                try { await UpdateJobStatusAsync(client, jobId, finalStatus, finalError, outerCt); } catch (Exception ex) { _log.LogWarning(ex, "[job {Job}] Final status update failed", jobId); }
+                // Final status update: a produced MP4 means the job succeeded even
+                // if a resume pre-labeled it "no recoverable footage" (the HLS dir
+                // may already have been deleted by an earlier finalize).
+                var finalStatus = stopReason == "CANCELLED" ? "CANCELLED"
+                    : (mp4Path != null || stopReason != "FAILED") ? "COMPLETED" : "FAILED";
+                try { await UpdateJobStatusAsync(client, jobId, finalStatus, finalStatus == "COMPLETED" ? null : finalError, outerCt); } catch (Exception ex) { _log.LogWarning(ex, "[job {Job}] Final status update failed", jobId); }
+                // Clear job state only after the final status update was sent. Clearing
+                // earlier let the poll loop re-adopt the still-CONVERTING job and race a
+                // phantom FAILED result past the real COMPLETED update.
+                _currentJobId = null;
+                _state.CurrentJobId = null;
+                _state.Status = "IDLE";
+                _log.LogInformation("State update -> {Status} jobId={JobId}", _state.Status, _state.CurrentJobId);
             }
         }
 

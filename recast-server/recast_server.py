@@ -461,6 +461,14 @@ def update_job_status():
     conn = get_db()
     cursor = conn.cursor()
     
+    # A completed job is terminal: stale in-flight updates (e.g. a recorder that
+    # re-adopted the job before the COMPLETED update landed) must not downgrade it.
+    cursor.execute("SELECT status FROM jobs WHERE id = ?", (job_id,))
+    row = cursor.fetchone()
+    if row and row['status'] == 'COMPLETED' and status != 'COMPLETED':
+        logging.info(f"Ignoring stale status update '{status}' for completed job {job_id}")
+        return jsonify({'status': 'success', 'ignored': True})
+    
     if status == 'FAILED' and should_retry:
         # Reset job to PENDING to allow retry
         # Keep the original start_time, but clear recorder assignment and errors

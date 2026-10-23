@@ -863,7 +863,16 @@ namespace Recast.WindowsRecorder.Services
                     LiveStart = new DateTimeOffset(File.GetCreationTimeUtc(first), TimeSpan.Zero);
             }
             catch { }
-            var usable = Directory.Exists(CurrentDir) && SegmentCount > 0;
+            // "Usable" means FinalizeAsync can actually produce an MP4: a playlist
+            // file plus segment files on disk. SegmentCount alone is unreliable —
+            // the m3u8 can be truncated or missing entries while seg*.ts is intact.
+            var usable = false;
+            try
+            {
+                usable = File.Exists(playlist)
+                    && (SegmentCount > 0 || Directory.EnumerateFiles(CurrentDir!, "seg*.ts").Any());
+            }
+            catch { }
             _log.LogInformation("AttachToJob({JobId}): dir={Dir} segments={Segs} usable={Usable}", jobId, CurrentDir, SegmentCount, usable);
             return usable;
         }
